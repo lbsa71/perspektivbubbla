@@ -1,46 +1,28 @@
 # Roadmap
 
-## Phase 0: Paper Prototype or Figma Clickthrough
-
-### Purpose
-
-Validate the UI idea before code.
-
-### Contents
-
-- Hex map on paper or in Figma.
-- 1-4 soldier tokens.
-- Manually simulated perspective bubble.
-- Event cards.
-- Simple paper AAR.
-
-### Question
-
-Does the player understand limited information and last known positions?
-
-### Effort
-
-1-2 evenings.
-
-### Exit Criterion
-
-At least one test person says: "I want to try again and improve my situation picture."
-
 ## Phase 1: Hex Map and One Soldier
 
 ### Purpose
 
-Create playable micro-movement.
+Create playable realtime micro-movement on the final architectural shape: backend-held state, headless simulation logic, and a dumb rendering client.
 
 ### Features
 
-- Render hex map.
-- Click to move soldier.
+- Backend session with authoritative game state.
+- Headless core for movement, facing, perception, exposure, and AAR events.
+- Dumb terminal-style UI that renders projections and sends commands.
+- Render scrollable/zoomable pointy-top hex map.
+- Map scale large enough to represent roughly 300x300 meters, or about 60-100 hexes across depending on final hex size.
+- Click each adjacent movement or movement intent; no destination autopilot.
+- Simulated realtime movement rate.
 - Terrain with movement cost.
 - Cover/concealment values.
-- Simple facing.
-- Simple perspective bubble.
-- Exposure calculation.
+- Cover/concealment/posture-aware exposure calculation.
+- Automatic facing from movement.
+- Explicit orientation changes while stationary or in cover.
+- Immediate FOV update from orientation.
+- Perceived information withers over time.
+- Difficulty-dependent terrain/protection hints.
 - AAR with route and exposure.
 
 ### Scenario
@@ -56,6 +38,8 @@ Is it fun and understandable to choose a route between cover under uncertainty?
 - Player makes meaningful route choices.
 - Player understands cover versus concealment after AAR.
 - Scenario can be replayed in under 5 minutes.
+- Client can be replaced without changing core game logic.
+- Backend command/state transitions are covered by tests.
 
 ## Phase 2: Facing and Risk Zone
 
@@ -294,4 +278,3 @@ Does the concept work as an educational game?
 - Replay.
 - Show actual versus perceived.
 - Learning points.
-

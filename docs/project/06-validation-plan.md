@@ -83,5 +83,4 @@ v0.1 is done when the following exist:
 4. Three information levels: training, normal, realistic.
 5. AAR that shows actual situation, perceived situation, and three learning points.
 6. Scenario content stored in JSON.
-7. The game runs in a browser without a backend.
-
+7. The game runs in a browser client backed by an authoritative backend state store.

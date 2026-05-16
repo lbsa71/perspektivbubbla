@@ -5,15 +5,27 @@
 - React or Next.js
 - TypeScript
 - SVG or Canvas for the hex map
-- Zustand or reducer-based state management
+- Node-based backend API for authoritative sessions
+- Shared/headless simulation core
+- Client state limited to view/input state
 - JSON-based scenarios
-- No server for the first proof of concept
+- In-memory backend store initially, behind a replaceable state-store interface
 
 ## Core Architecture Principle
 
 Separate actual world state from perceived state.
 
-The simulation owns the truth. The player UI receives only a role-filtered perceived state. The AAR records enough information to compare the two afterward.
+The backend owns the truth. The simulation core applies rules to backend-held state. The player UI receives only a role-filtered perceived projection and sends commands back to the backend. The AAR records enough information to compare actual state and perceived state afterward.
+
+See [ADR 0001](../adr/0001-backend-state-store-and-headless-core.md) for the accepted architecture decision.
+
+## Runtime Boundaries
+
+- **Core simulation:** pure or near-pure TypeScript modules for movement, facing, perception, exposure, events, and AAR inputs.
+- **Backend:** owns sessions, command handling, simulated time, state storage, and role-filtered projections.
+- **Client:** renders projections in a dumb terminal-style interface, handles pan/zoom/input, sends commands, and displays AAR output.
+
+The client must not directly mutate game state or duplicate game rules.
 
 ```ts
 type WorldState = {
@@ -31,16 +43,19 @@ type PerceivedState = {
 
 ## Core Modules
 
-1. `HexMap`
-2. `UnitModel`
-3. `PerceptionSystem`
-4. `MovementSystem`
-5. `CommunicationSystem`
-6. `OrderSystem`
-7. `EventSystem`
-8. `ScenarioRunner`
-9. `AARRecorder`
-10. `AARViewer`
+1. `SessionStore`
+2. `CommandHandler`
+3. `SimulationClock`
+4. `HexMap`
+5. `UnitModel`
+6. `PerceptionSystem`
+7. `MovementSystem`
+8. `CommunicationSystem`
+9. `OrderSystem`
+10. `EventSystem`
+11. `ScenarioRunner`
+12. `AARRecorder`
+13. `AARViewer`
 
 ## Game State
 
@@ -58,6 +73,34 @@ type GameState = {
   aar: AARRecord;
 };
 ```
+
+## Command Model
+
+Player interaction should be modeled as commands submitted to the backend:
+
+```ts
+type PlayerCommand =
+  | {
+      type: "move_to_adjacent_hex";
+      unitId: string;
+      target: HexCoord;
+      issuedAt: number;
+    }
+  | {
+      type: "face_direction";
+      unitId: string;
+      direction: Direction;
+      issuedAt: number;
+    }
+  | {
+      type: "set_posture";
+      unitId: string;
+      posture: "standing" | "crouched" | "prone";
+      issuedAt: number;
+    };
+```
+
+For Phase 1, movement requires repeated player intent. Clicking a far destination should not autopilot the soldier across the map.
 
 ## Minimal TypeScript Data Model
 
@@ -140,6 +183,7 @@ type AAREvent = {
 
 - Put deterministic simulation logic in framework-independent modules.
 - Keep rendering, input, and UI state separate from simulation rules.
+- Keep backend state mutation behind command handling and state-store interfaces.
 - Inject time/randomness when needed so tests can be deterministic.
 - Log domain events as they happen so AAR does not have to reconstruct truth from UI state.
 - Prefer explicit data transformations over hidden mutation.
@@ -150,13 +194,15 @@ type AAREvent = {
 
 The first implementation slice should include:
 
-1. A tiny static hex map.
+1. Backend session creation and in-memory authoritative state.
 2. One soldier with position and facing.
-3. Click-to-move or step movement.
-4. Terrain movement cost.
-5. Cover/concealment values.
-6. Exposure logging.
-7. A minimal AAR summary showing route and exposure.
+3. A larger Scenario A map with viewport pan/zoom, representing roughly 300x300 meters.
+4. Click-issued adjacent movement commands.
+5. Explicit facing/orientation commands.
+6. Terrain movement cost and movement rate over simulated time.
+7. Cover/concealment/posture-aware exposure logging.
+8. Difficulty-dependent display of terrain/protection hints.
+9. Immediate field-of-view update with perceived information aging over time.
+10. A minimal AAR summary showing route and exposure.
 
 This slice should be production-tested before adding group movement, communication, injury, or advanced perception.
-

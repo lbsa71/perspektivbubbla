@@ -9,7 +9,9 @@ Validate whether micro-movement with a perspective bubble is interesting and und
 ### Setup
 
 - One soldier.
-- Small hex map, roughly 12x12.
+- Hex map large enough to represent roughly 300x300 meters.
+- At 3-5 meters per hex, this implies roughly 60-100 hexes across depending on final scale.
+- The player view should support pan/zoom instead of showing the full map at once.
 - Start behind cover.
 - Goal at another cover position.
 - Intermediate field with varied cover and concealment.
@@ -123,4 +125,3 @@ Shows:
 - Every scenario must produce an AAR with at least three concrete observations.
 - Scenario content should be stored as JSON once implementation begins.
 - Scenarios should remain procedural and perception-focused, not detailed tactical doctrine.
-
