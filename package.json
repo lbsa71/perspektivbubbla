@@ -1,0 +1,21 @@
+{
+  "name": "perspektivbubbla",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:backend": "node scripts/dev-backend.mjs",
+    "dev:client": "vite --host 127.0.0.1",
+    "test": "node --test --experimental-strip-types \"packages/**/*.test.ts\"",
+    "start": "node --experimental-strip-types packages/server/src/server.ts"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  },
+  "workspaces": [
+    "packages/core",
+    "packages/server",
+    "packages/client"
+  ]
+}

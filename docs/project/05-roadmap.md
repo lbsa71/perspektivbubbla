@@ -9,21 +9,32 @@ Create playable realtime micro-movement on the final architectural shape: backen
 ### Features
 
 - Backend session with authoritative game state.
-- Headless core for movement, facing, perception, exposure, and AAR events.
+- WebSocket command/projection channel.
+- Event-sourced session log from the start.
+- In-memory event store behind pluggable service/provider/repository interfaces.
+- Headless core for movement, facing, perception, opposing units, exposure, and AAR events.
 - Dumb terminal-style UI that renders projections and sends commands.
 - Render scrollable/zoomable pointy-top hex map.
-- Map scale large enough to represent roughly 300x300 meters, or about 60-100 hexes across depending on final hex size.
-- Click each adjacent movement or movement intent; no destination autopilot.
-- Simulated realtime movement rate.
+- Map scale large enough to represent roughly 300x300 meters, or about 100 hexes across at 3 meters per hex.
+- Click any target hex to start moving toward it.
+- Backend-owned simple nearest pathing; stop if an obstacle blocks the path.
+- New movement/orientation/posture commands interrupt current movement.
+- Simulated realtime movement rate at 5-10 ticks/second.
 - Terrain with movement cost.
 - Cover/concealment values.
 - Cover/concealment/posture-aware exposure calculation.
+- Explicit opposing observer units.
+- Simple opposing-unit heuristics: observe, alert, move to cover, orient toward contact, and emit abstract return-fire/contact-pressure events.
 - Automatic facing from movement.
+- Free mouse and keyboard look/sweep, with sweeps over 90 degrees bleeding into orientation change.
 - Explicit orientation changes while stationary or in cover.
 - Immediate FOV update from orientation.
 - Perceived information withers over time.
 - Difficulty-dependent terrain/protection hints.
 - AAR with route and exposure.
+- Probabilistic detection.
+- Objective transition after detection or failure.
+- Role-scoped projections that prepare for a future observer/instructor client without implementing one in Phase 1.
 
 ### Scenario
 
@@ -40,6 +51,8 @@ Is it fun and understandable to choose a route between cover under uncertainty?
 - Scenario can be replayed in under 5 minutes.
 - Client can be replaced without changing core game logic.
 - Backend command/state transitions are covered by tests.
+- Opposing-unit detection and simple behavior are covered by tests.
+- Event log can rebuild the same final projection deterministically.
 
 ## Phase 2: Facing and Risk Zone
 

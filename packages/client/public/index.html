@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="sv">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Perspektivbubbla - Gruppchef</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>Perspektivbubbla</h1>
+          <p>Gruppchefens lägesbild</p>
+        </div>
+        <div class="status">
+          <span id="connection">FRÅNKOPPLAD</span>
+          <span id="time">t=0.0</span>
+          <button
+            id="aar-toggle"
+            class="icon-button"
+            type="button"
+            data-command="toggle-aar"
+            aria-controls="aar-panel"
+            aria-expanded="false"
+            title="Visa eller dölj händelselogg"
+          >
+            <span class="feed-icon" aria-hidden="true"></span>
+            <span class="sr-only">Visa eller dölj händelselogg</span>
+          </button>
+        </div>
+      </header>
+
+      <section class="layout">
+        <aside class="panel command-panel">
+          <nav class="info-words" aria-label="Detaljer">
+            <button id="info-unit" class="info-word" type="button">Chef</button>
+            <button id="info-group" class="info-word" type="button">Grupp</button>
+            <button id="info-goal" class="info-word" type="button">Mål</button>
+            <button id="info-orders" class="info-word" type="button">Order</button>
+          </nav>
+
+          <h2>Grupp</h2>
+          <div id="group"></div>
+
+          <h2>Ordergivning</h2>
+          <div class="mode-tabs" role="tablist" aria-label="Ordermetod">
+            <button
+              id="voice-tab"
+              role="tab"
+              aria-controls="voice-palette"
+              aria-selected="true"
+              data-command="communication"
+              data-communication="voice"
+            >
+              Röst
+            </button>
+            <button
+              id="gesture-tab"
+              role="tab"
+              aria-controls="gesture-palette"
+              aria-selected="false"
+              data-command="communication"
+              data-communication="gesture"
+            >
+              Tecken
+            </button>
+          </div>
+
+          <div id="voice-palette" class="command-palette voice-palette" role="tabpanel" aria-labelledby="voice-tab">
+            <div class="controls formation-controls" aria-label="Formationer med röst">
+              <button data-command="formation" data-formation="line">Skyttelinje</button>
+              <button data-command="formation" data-formation="file">Skytteled</button>
+              <button data-command="formation" data-formation="column">Skyttekolonn</button>
+              <button data-command="formation" data-formation="wedge">Skytteplog</button>
+              <button data-command="formation" data-formation="dispersed">Skyttevarn</button>
+              <button data-command="formation" data-formation="regroup">Samling</button>
+            </div>
+            <div class="controls movement-controls" aria-label="Rörelseorder med röst">
+              <button data-command="forward">Framåt!</button>
+              <button data-command="halt">Halt!</button>
+            </div>
+          </div>
+
+          <div id="gesture-palette" class="command-palette gesture-palette" role="tabpanel" aria-labelledby="gesture-tab" hidden>
+            <div class="controls gesture-controls" aria-label="Formationer med tecken">
+              <button class="gesture-command" data-command="formation" data-formation="line" title="Skyttelinje">
+                <img src="/signs/general/skyttelinje.png" alt="" aria-hidden="true" />
+                <span>Skyttelinje</span>
+              </button>
+              <button class="gesture-command" data-command="formation" data-formation="file" title="Skytteled">
+                <img src="/signs/general/skytteled.png" alt="" aria-hidden="true" />
+                <span>Skytteled</span>
+              </button>
+              <button class="gesture-command" data-command="formation" data-formation="column" title="Skyttekolonn">
+                <img src="/signs/general/skyttekolonn.png" alt="" aria-hidden="true" />
+                <span>Skyttekolonn</span>
+              </button>
+              <button class="gesture-command" data-command="formation" data-formation="wedge" title="Skytteplog">
+                <img src="/signs/general/skytteplog.png" alt="" aria-hidden="true" />
+                <span>Skytteplog</span>
+              </button>
+              <button class="gesture-command" data-command="formation" data-formation="dispersed" title="Skyttevarn">
+                <img src="/signs/general/skyttevarn.png" alt="" aria-hidden="true" />
+                <span>Skyttevarn</span>
+              </button>
+              <button class="gesture-command" data-command="formation" data-formation="regroup" title="Samling">
+                <img src="/signs/general/samling.png" alt="" aria-hidden="true" />
+                <span>Samling</span>
+              </button>
+            </div>
+            <div class="controls gesture-controls movement-controls" aria-label="Rörelseorder med tecken">
+              <button class="gesture-command" data-command="forward" title="Framåt">
+                <img src="/signs/general/framat_oka_hastigheten.png" alt="" aria-hidden="true" />
+                <span>Framåt</span>
+              </button>
+              <button class="gesture-command" data-command="halt" title="Halt">
+                <img src="/signs/general/halt.png" alt="" aria-hidden="true" />
+                <span>Halt</span>
+              </button>
+            </div>
+          </div>
+        </aside>
+
+        <section class="map-wrap">
+          <svg id="map" role="img" aria-label="hexkarta"></svg>
+          <div id="hex-tooltip" class="hex-tooltip" hidden></div>
+        </section>
+
+        <aside id="aar-panel" class="panel aar-panel" hidden>
+          <h2>Händelselogg</h2>
+          <ol id="events"></ol>
+        </aside>
+      </section>
+    </main>
+
+    <script src="/app.ts" type="module"></script>
+  </body>
+</html>

@@ -84,3 +84,4 @@ v0.1 is done when the following exist:
 5. AAR that shows actual situation, perceived situation, and three learning points.
 6. Scenario content stored in JSON.
 7. The game runs in a browser client backed by an authoritative backend state store.
+8. Session history is stored as an event log that can rebuild state and AAR projections.

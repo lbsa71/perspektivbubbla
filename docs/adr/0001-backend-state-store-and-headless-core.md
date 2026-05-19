@@ -32,9 +32,9 @@ Initial persistence may be in memory, but the code should isolate the state-stor
 - Keep a shared/core package or module for pure simulation logic.
 - Model player input as commands, not direct state mutation.
 - Use simulated realtime, where movement is constrained by movement rate over time.
-- Require the player to click or otherwise issue each movement/orientation intent; no destination autopilot for Phase 1.
+- Require the player to click or otherwise issue each movement/orientation intent. A movement command may continue toward its selected hex until reached or interrupted, but Phase 1 should not add long-route autopilot owned by the UI.
 - Update facing automatically from movement, but also support explicit orientation changes.
-- Render a larger map with pan/zoom rather than a tiny full-board toy map. Scenario A should be able to represent roughly 300x300 meters, which means about 60-100 hexes across depending on final hex scale.
+- Render a larger map with pan/zoom rather than a tiny full-board toy map. Scenario A should be able to represent roughly 300x300 meters, which means about 100 hexes across at 3 meters per hex.
 - Apply exposure using terrain, cover, concealment, and posture.
 - Make difficulty affect how much terrain/protection information the UI reveals.
 - Update field of view immediately from facing/orientation; perceived information then ages over time.

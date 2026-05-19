@@ -98,6 +98,5 @@ Measurable criteria:
 v0.1 should prove three things:
 
 1. **The perspective bubble works:** players accept and learn from limited information.
-2. **The hex scale works:** 3-5 meters per hex makes movement, cover, concealment, and risk zones understandable.
+2. **The hex scale works:** 3 meters per hex makes movement, cover, concealment, and risk zones understandable.
 3. **AAR creates learning:** players gain insight into what actually happened compared with what they believed happened.
-

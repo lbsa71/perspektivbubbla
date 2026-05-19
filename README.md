@@ -8,7 +8,31 @@ The v0.1 goal is to prove one question:
 
 ## Current Status
 
-This repository is in project planning/bootstrap state. There is no runnable application yet. The former design-bible README has been split into focused planning artifacts under [docs/project](docs/project).
+This repository has a runnable Phase 1 implementation slice. The former design-bible README has been split into focused planning artifacts under [docs/project](docs/project).
+
+## Run Phase 1
+
+Requirements:
+
+- Node.js 24+
+
+Commands:
+
+```sh
+npm test
+npm start
+```
+
+Then open [http://127.0.0.1:5173](http://127.0.0.1:5173).
+
+For active development, run the watched backend plus Vite client:
+
+```sh
+npm install
+npm run dev
+```
+
+Vite serves the client at [http://127.0.0.1:5173](http://127.0.0.1:5173) and proxies `/api` and `/ws` to the Node backend on port `5174`.
 
 ## Planning Artifacts
 
@@ -18,6 +42,10 @@ This repository is in project planning/bootstrap state. There is no runnable app
 - [Technical plan](docs/project/04-technical-plan.md) - recommended stack, architecture boundaries, modules, and starter TypeScript model.
 - [Roadmap](docs/project/05-roadmap.md) - incremental implementation phases and backlog priorities.
 - [Validation plan](docs/project/06-validation-plan.md) - playtest plan, risks, mitigations, and v0.1 done definition.
+
+## Research Notes
+
+- [Swedish army formations, signs, and procedures](docs/research/swedish-army-formations-and-procedures.md) - source-backed notes for igelkott, samling runt chefen, stridskolonn, stridslinje, blixtlås, and växelvis framåt/bakåt.
 
 Agent-facing development rules live in [.agents/rules.md](.agents/rules.md).
 
@@ -43,7 +71,7 @@ v0.1 is not a full combat simulator. It should avoid detailed weapons simulation
 - Treat AAR recording as a first-class output of the simulation, not an afterthought.
 - Keep core simulation logic deterministic, pure where practical, and independent of UI framework code.
 - Follow strict TDD for production implementation. See [.agents/rules.md](.agents/rules.md).
-- Follow the architectural decision in [ADR 0001](docs/adr/0001-backend-state-store-and-headless-core.md).
+- Follow the architecture decisions in [ADR 0001](docs/adr/0001-backend-state-store-and-headless-core.md), [ADR 0002](docs/adr/0002-realtime-websocket-and-event-sourced-sessions.md), and [ADR 0003](docs/adr/0003-explicit-opposing-observer-units.md).
 
 ## Repository Layout
 
@@ -54,6 +82,8 @@ v0.1 is not a full combat simulator. It should avoid detailed weapons simulation
 +-- docs/
 |   +-- adr/
 |   |   +-- 0001-backend-state-store-and-headless-core.md
+|   |   +-- 0002-realtime-websocket-and-event-sourced-sessions.md
+|   |   +-- 0003-explicit-opposing-observer-units.md
 |   +-- project/
 |       +-- 01-product-brief.md
 |       +-- 02-game-design.md
@@ -61,9 +91,16 @@ v0.1 is not a full combat simulator. It should avoid detailed weapons simulation
 |       +-- 04-technical-plan.md
 |       +-- 05-roadmap.md
 |       +-- 06-validation-plan.md
+|   +-- research/
+|       +-- reference/
+|       +-- swedish-army-formations-and-procedures.md
++-- packages/
+|   +-- client/
+|   +-- core/
+|   +-- server/
 +-- README.md
 ```
 
 ## Implementation Starting Point
 
-Start with the smallest useful vertical slice: a backend session with a headless simulation core, one soldier, a scrollable/zoomable hex map, click-issued movement/orientation commands, exposure logging, and a minimal AAR. Only add broader group-leader mechanics after that loop is playable and tested.
+Phase 1 currently includes a WebSocket-backed, event-sourced backend session with a headless TypeScript simulation core, one player soldier, simple opposing observer units, a scrollable/zoomable hex map, click-issued movement/orientation commands, exposure/contact logging, and a minimal event/AAR feed. Only add broader group-leader mechanics after that loop is playable and tested.

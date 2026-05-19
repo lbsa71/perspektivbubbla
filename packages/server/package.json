@@ -1,0 +1,6 @@
+{
+  "name": "@perspektivbubbla/server",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/server.ts"
+}

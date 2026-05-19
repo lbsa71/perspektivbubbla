@@ -7,6 +7,7 @@ These rules apply to implementation work in this repository.
 - Build one thin vertical slice at a time.
 - Start with the smallest playable loop: hex map, one soldier, movement, exposure logging, and minimal AAR.
 - Keep each change scoped to one behavior or one infrastructure need.
+- Always work in strict TDD fashion
 - Do not expand v0.1 scope without updating the planning docs.
 - Prefer domain behavior over UI polish until the core loop is proven.
 - Update docs when implementation decisions change product behavior.
@@ -14,6 +15,7 @@ These rules apply to implementation work in this repository.
 ## Strict TDD
 
 - Write a failing test before production code for every behavior change.
+- Always refactor before doing a change - "why was this not an easy fix"
 - Use red-green-refactor: fail for the right reason, make it pass simply, then clean up.
 - Do not skip, weaken, or delete tests to make a change pass.
 - Cover core algorithms with deterministic unit tests before wiring them to UI.

@@ -96,9 +96,9 @@ Examples:
 
 Scale:
 
-- 1 hex is roughly 3-5 meters.
+- 1 hex is roughly 3 meters.
 - 1 soldier occupies 1 hex.
-- 1 time step is roughly 3-10 seconds depending on scenario settings.
+- Simulation time is advanced by the backend clock, initially at 5-10 ticks per second.
 
 The scale is pedagogical, not exact measurement.
 
@@ -161,9 +161,10 @@ The game should clearly teach the difference between "hard to see" and "protecte
 
 ## Soldier Model
 
-Each soldier has:
+Each unit, friendly or opposing, has:
 
 - id/name
+- side
 - role
 - position
 - facing
@@ -218,13 +219,15 @@ Effects:
 
 ## Movement Model
 
-Each soldier has movement points per time step.
+Movement is simulated in realtime on the backend clock. The client sends movement intent; the server advances movement over simulated time.
 
-Baseline:
+Initial Phase 1 rates:
 
-- healthy soldier: 4 points
-- tired soldier: 3 points
-- stressed/unclear order: risk of delay
+- standing movement: 1 hex/second before terrain modifiers
+- crouched movement: 0.6 hex/second before terrain modifiers
+- prone movement: 0.25 hex/second before terrain modifiers
+- tired soldier: reduce rate by 25 percent
+- stressed/unclear order: risk of delay or interrupted action
 - helping injured: heavily reduced movement
 
 Terrain movement costs:
@@ -237,6 +240,21 @@ Terrain movement costs:
 | Forest | 2 |
 | Ditch/depression | 2 |
 | Obstacle/wall | 3 or impassable |
+
+Movement commands are interruptible. The player can click any target hex. The backend computes a simple nearest path toward that target, and movement stops if an obstacle blocks the path. A new move, posture, or body-orientation command cancels the current movement intent and creates new domain events for the event log.
+
+## Opposing Units
+
+Opposing units are explicit world entities, not abstract threat zones. They use simple heuristics:
+
+- scan their field of view
+- probabilistically detect visible player units
+- become alerted on detection/contact
+- move to nearby cover when exposed
+- orient toward perceived contact
+- create abstract return-fire/contact-pressure events when alerted and oriented
+
+Return fire is intentionally abstract in v0.1. It should affect pressure, exposure, scenario state, and AAR, but it should not become detailed weapon simulation or ballistics.
 
 Buddy movement in v0.1 is simplified:
 
@@ -264,6 +282,8 @@ Each soldier faces one of six hex directions:
 - NW
 
 Facing affects field of view, risk/effect zone, reaction to sound/visual events, and how quickly a soldier can act in another direction.
+
+The player can freely sweep/look around with mouse and keyboard controls, similar to moving the neck. Looking more than 90 degrees away from body orientation should bleed into an orientation change. Field of view updates immediately when the player looks or turns; perceived information then ages over time.
 
 The sight field is wider than the risk/effect zone and depends on facing, terrain, posture, stress, light, movement, concealment, and obstacles.
 
@@ -490,4 +510,3 @@ Example learning points:
 - The group lost cohesion when orders were given with low audibility.
 - Two soldiers blocked each other's risk zones for 14 seconds.
 - You chose concealment but not cover when detected.
-
