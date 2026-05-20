@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Perspektivbubbla - Gruppchef</title>
-    <script type="module" crossorigin src="/assets/index-B0lGQhb8.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-DHZctsUK.css">
+    <script type="module" crossorigin src="/assets/index-ln04U4Tz.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-KYKtfFyw.css">
   </head>
   <body>
     <main class="shell">
@@ -66,6 +66,16 @@
             >
               Tecken
             </button>
+            <button
+              id="radio-tab"
+              role="tab"
+              aria-controls="radio-palette"
+              aria-selected="false"
+              data-command="communication"
+              data-communication="radio"
+            >
+              Radio
+            </button>
           </div>
 
           <div id="voice-palette" class="command-palette voice-palette" role="tabpanel" aria-labelledby="voice-tab">
@@ -119,6 +129,21 @@
                 <img src="/assets/halt-CRf0yLYu.png" alt="" aria-hidden="true" />
                 <span>Halt</span>
               </button>
+            </div>
+          </div>
+
+          <div id="radio-palette" class="command-palette radio-palette" role="tabpanel" aria-labelledby="radio-tab" hidden>
+            <div class="controls formation-controls" aria-label="Formationer med radio">
+              <button data-command="formation" data-formation="line">Skyttelinje</button>
+              <button data-command="formation" data-formation="file">Skytteled</button>
+              <button data-command="formation" data-formation="column">Skyttekolonn</button>
+              <button data-command="formation" data-formation="wedge">Skytteplog</button>
+              <button data-command="formation" data-formation="dispersed">Skyttevarn</button>
+              <button data-command="formation" data-formation="regroup">Samling</button>
+            </div>
+            <div class="controls movement-controls" aria-label="Rörelseorder med radio">
+              <button data-command="forward">Framåt!</button>
+              <button data-command="halt">Halt!</button>
             </div>
           </div>
         </aside>

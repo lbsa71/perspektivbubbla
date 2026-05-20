@@ -3,7 +3,7 @@ export type TerrainType = "field" | "grass" | "forest" | "ditch" | "wall" | "roa
 export type Posture = "standing" | "crouched" | "prone" | "moving" | "helping" | "injured";
 export type Side = "friendly" | "opposing";
 export type Formation = "column" | "line" | "file" | "wedge" | "dispersed" | "regroup";
-export type CommunicationMethod = "voice" | "gesture";
+export type CommunicationMethod = "voice" | "gesture" | "radio";
 export type UnitRole = "leader" | "deputy_leader" | "soldier" | "observer";
 export type GroupElement = "command" | "tat_1" | "tat_2";
 export type HexVisibility = "visible" | "memory" | "unknown";
@@ -1144,8 +1144,12 @@ function applyEvent(world: WorldState, event: DomainEvent): WorldState {
       phase: "advancing",
       target: clone(event.payload.target as HexCoord),
       targetPoint: clone((event.payload.targetPoint as MapPoint | undefined) ?? axialToMapPoint(event.payload.target as HexCoord)),
-      advanceTarget: clone(event.payload.target as HexCoord),
-      advanceTargetPoint: clone((event.payload.targetPoint as MapPoint | undefined) ?? axialToMapPoint(event.payload.target as HexCoord)),
+      advanceTarget: event.payload.advanceTarget
+        ? clone(event.payload.advanceTarget as HexCoord)
+        : clone(event.payload.target as HexCoord),
+      advanceTargetPoint: event.payload.advanceTargetPoint
+        ? clone(event.payload.advanceTargetPoint as MapPoint)
+        : clone((event.payload.targetPoint as MapPoint | undefined) ?? axialToMapPoint(event.payload.target as HexCoord)),
     };
   }
   if (event.type === "order_delivery_resolved" && event.payload.status === "received") {
@@ -1192,6 +1196,8 @@ function collectMovementEvents(world: WorldState, seconds: number): Array<{ type
   if (phaseEvents.length > 0) {
     return phaseEvents;
   }
+
+  events.push(...collectEmbodiedLeaderFormationEvents(world));
 
   const motivatedFormation = collectMotivatedFormationMovementEvents(world, seconds);
   events.push(...motivatedFormation.events);
@@ -1326,80 +1332,102 @@ function collectForwardFormationPhaseEvents(world: WorldState): Array<{ type: st
   }
 
   const directionVector = activeFormation.directionVector ?? directionVectorFromHexDirection(activeFormation.direction);
-  const assignments = formationAssignments(
-    world,
-    receivers,
-    activeFormation.formation,
-    activeFormation.advanceTargetPoint,
-    activeFormation.direction,
-    directionVector,
-  );
   const events: Array<{ type: string; payload: Record<string, unknown> }> = [
     {
       type: "formation_advance_started",
       payload: {
         orderId: activeFormation.orderId,
         formation: activeFormation.formation,
-        target: activeFormation.advanceTarget,
-        targetPoint: activeFormation.advanceTargetPoint,
+        target: leader.coord,
+        targetPoint: leader.position,
+        advanceTarget: activeFormation.advanceTarget,
+        advanceTargetPoint: activeFormation.advanceTargetPoint,
         direction: activeFormation.direction,
         directionVector,
       },
     },
   ];
-  const pathFallbacks: Array<{ unitId: string; from: HexCoord; target: HexCoord }> = [];
 
-  for (const assignment of assignments) {
-    const pathResult = nearestPath(world, assignment.unit.coord, assignment.target, {
-      blocked: occupiedHexes(world, assignment.unit.id),
-      allowTarget: true,
-      maxVisited: 6000,
-    });
-    if (sameCoord(assignment.unit.coord, assignment.target)) {
-      events.push({
-        type: "movement_completed",
-        payload: {
-          unitId: assignment.unit.id,
-          at: assignment.target,
-          targetPoint: assignment.targetPoint,
-          orderId: activeFormation.orderId,
-        },
-      });
-    } else {
-      if (pathResult.path.length === 0) {
-        pathFallbacks.push({
-          unitId: assignment.unit.id,
-          from: clone(assignment.unit.coord),
-          target: clone(assignment.target),
-        });
-      }
-      events.push({
-        type: "movement_started",
-        payload: {
-          unitId: assignment.unit.id,
-          target: assignment.target,
-          targetPoint: assignment.targetPoint,
-          path: pathResult.path.length > 0 ? pathResult.path : [assignment.target],
-          orderId: activeFormation.orderId,
-        },
-      });
-    }
+  return events;
+}
+
+function collectEmbodiedLeaderFormationEvents(world: WorldState): Array<{ type: string; payload: Record<string, unknown> }> {
+  const activeFormation = world.activeFormation;
+  if (!activeFormation || activeFormation.orderKind !== "forward" || activeFormation.phase !== "advancing") {
+    return [];
   }
 
-  if (pathFallbacks.length > 0) {
+  const leader = world.units.find((unit) => unit.side === "friendly" && unit.role === "leader");
+  if (!leader || leader.currentOrderId !== activeFormation.orderId || leader.intent.type !== "moving") {
+    return [];
+  }
+
+  const receivers = formationReceivers(world, leader.id).filter((unit) => unit.currentOrderId === activeFormation.orderId);
+  const assignments = formationAssignments(
+    world,
+    receivers,
+    activeFormation.formation,
+    leader.position,
+    activeFormation.direction,
+    activeFormation.directionVector ?? directionVectorFromHexDirection(activeFormation.direction),
+  );
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+
+  for (const assignment of assignments) {
+    if (assignment.unit.id === leader.id) {
+      continue;
+    }
+
+    const unit = world.unitsById[assignment.unit.id];
+    if (!unit || unit.intent.type === "moving" || formationTargetIsCurrent(unit, assignment.target, assignment.targetPoint)) {
+      continue;
+    }
+
+    if (sameCoord(unit.coord, assignment.target)) {
+      continue;
+    }
+
+    const pathResult = nearestPath(world, unit.coord, assignment.target, {
+      blocked: occupiedHexes(world, unit.id),
+      allowTarget: true,
+      maxVisited: 900,
+    });
+    if (pathResult.path.length === 0) {
+      events.push({
+        type: "movement_waiting",
+        payload: {
+          unitId: unit.id,
+          from: unit.coord,
+          target: assignment.target,
+          reason: "embodied_leader_follow_no_path",
+        },
+      });
+      continue;
+    }
+
     events.push({
-      type: "formation_movement_diagnostic",
+      type: "movement_started",
       payload: {
+        unitId: unit.id,
+        target: assignment.target,
+        targetPoint: assignment.targetPoint,
+        path: pathResult.path,
         orderId: activeFormation.orderId,
-        phase: "advancing",
-        reason: "advance_path_fallback",
-        message: "long-range path was unavailable; using local motivated stepping",
-        units: pathFallbacks,
+        reason: "embodied_leader_follow",
+        leaderId: leader.id,
       },
     });
   }
 
   return events;
+}
+
+function formationTargetIsCurrent(unit: Unit, target: HexCoord, targetPoint: MapPoint): boolean {
+  return (
+    unit.intent.type === "moving" &&
+    sameCoord(unit.intent.target, target) &&
+    mapDistanceInHexes(unit.intent.targetPoint, targetPoint) <= 0.25
+  );
 }
 
 function formationIsReadyToAdvance(world: WorldState, activeFormation: FormationState, receivers: Unit[]): boolean {
@@ -1444,6 +1472,7 @@ function collectMotivatedFormationMovementEvents(
     .filter(
       (unit): unit is Unit & { intent: Extract<UnitIntent, { type: "moving" }> } =>
         unit.side === "friendly" &&
+        unit.role !== "leader" &&
         unit.currentOrderId === activeFormation.orderId &&
         unit.intent.type === "moving" &&
         unit.intent.path.length > 0,
@@ -2212,6 +2241,9 @@ function relayPairs(world: WorldState, receivers: Unit[], leaderId: string, comm
       if (communication === "gesture" && distance <= 8 && hasLineOfSight(world, mapPointToHex(a.position), mapPointToHex(b.position))) {
         addPair(a, b);
       }
+      if (communication === "radio") {
+        addPair(a, b);
+      }
     }
   }
 
@@ -2257,6 +2289,10 @@ function orderRelayReception(
     return distance <= 10
       ? { status: "received", reason: "audible_relay", relayedBy: sender.id, distance, hops }
       : { status: "missed", reason: "out_of_voice_range", relayedBy: sender.id, distance, hops };
+  }
+
+  if (communication === "radio") {
+    return { status: "received", reason: "radio_relay", relayedBy: sender.id, distance, hops };
   }
 
   if (distance > 8) {

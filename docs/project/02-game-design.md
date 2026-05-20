@@ -221,7 +221,7 @@ Effects:
 
 Movement is simulated in realtime on the backend clock. The client sends movement intent; the server advances movement over simulated time.
 
-Initial Phase 1 rates:
+Initial movement rates:
 
 - standing movement: 1 hex/second before terrain modifiers
 - crouched movement: 0.6 hex/second before terrain modifiers
@@ -377,6 +377,15 @@ Example event:
 The AAR should show when the injury occurred, who saw it, who helped, when the leader perceived anything, and how long the status remained unresolved.
 
 ## Orders
+
+The group leader is still a soldier in the terrain. The commander view must not become a detached RTS controller. The player can set or indicate direction and issue `framåt`, but then still has to move the grpc through the terrain with normal movement clicks. The rest of the group treats that movement as the embodied lead for the formation.
+
+Consequences:
+
+- `framåt` means "advance in this formation and direction," not "autopilot the whole group to a far goal."
+- The grpc's movement, pauses, terrain choices, posture, and hesitation affect the group.
+- Soldiers stop or slow if the grpc stops, just as they should stop or slow for any other formation neighbour.
+- The group should preserve formation and neighbour cohesion around the leader's actual path, not around an abstract formation center that moves independently of the player.
 
 An order consists of:
 

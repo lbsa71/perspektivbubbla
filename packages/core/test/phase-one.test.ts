@@ -201,7 +201,7 @@ test("group reformation routes around occupied friendly hexes instead of stallin
   assert.ok(session.events.some((event) => event.type === "movement_rerouted"));
 });
 
-test("framåt advances the current formation and halt stops every friendly unit", () => {
+test("framåt arms embodied advance and halt stops every friendly unit", () => {
   let session = createPhaseOneSession({ seed: "forward-halt", scenario: "group_commander" });
   const leader = session.world.units.find((unit) => unit.role === "leader");
   assert.ok(leader);
@@ -230,7 +230,6 @@ test("framåt advances the current formation and halt stops every friendly unit"
   assert.notDeepEqual(session.world.activeFormation?.advanceTarget, session.world.objective.target);
   assert.equal(session.world.activeFormation?.direction, "SE");
   assert.deepEqual(session.world.activeFormation?.target, leader.coord);
-  assert.deepEqual(session.world.activeFormation?.advanceTarget, { q: 91, r: 50 });
   assert.ok(session.world.units.some((unit) => unit.side === "friendly" && unit.intent.type === "moving"));
   assertLeaderAndDeputyClose(session);
 
@@ -240,14 +239,24 @@ test("framåt advances the current formation and halt stops every friendly unit"
   }
 
   assert.equal(session.world.activeFormation?.phase, "advancing");
-  assert.deepEqual(session.world.activeFormation?.target, { q: 91, r: 50 });
+  assert.deepEqual(session.world.activeFormation?.target, session.world.unitsById[leader.id].coord);
   assert.ok(session.events.some((event) => event.type === "formation_advance_started"));
+  assert.ok(session.world.units.filter((unit) => unit.side === "friendly").every((unit) => unit.intent.type === "idle"));
+
+  const embodiedLeader = session.world.unitsById[leader.id];
+  session = dispatchCommand(session, {
+    type: "move_to_hex",
+    unitId: embodiedLeader.id,
+    target: { q: embodiedLeader.coord.q + 4, r: embodiedLeader.coord.r },
+    issuedAt: session.world.time,
+  });
 
   for (let step = 0; step < 20; step += 1) {
     session = advanceSession(session, 0.2, { random: () => 1 });
     assertUniqueFriendlyHexes(session);
   }
 
+  assert.ok(hexDistance(session.world.unitsById[leader.id].coord, embodiedLeader.coord) > 0);
   assert.ok(session.world.units.some((unit) => unit.side === "friendly" && unit.intent.type === "moving"));
 
   session = dispatchCommand(session, {
@@ -331,6 +340,38 @@ test("gesture line and framåt are resolved by formation motivations for the who
   const friendlies = session.world.units.filter((unit) => unit.side === "friendly");
   assert.ok(friendlies.every((unit) => unit.intent.type === "moving" || unit.intent.type === "idle"));
   assert.ok(friendlies.some((unit) => hexDistance(unit.coord, leader.coord) >= 3));
+});
+
+test("radio formation orders reach the full group as a communication mode", () => {
+  let session = createPhaseOneSession({ seed: "radio-formation", scenario: "group_commander" });
+  const leader = session.world.units.find((unit) => unit.role === "leader");
+  assert.ok(leader);
+
+  session.world.unitsById.FRIENDLY_6.coord = { q: 52, r: 70 };
+  session.world.unitsById.FRIENDLY_6.position = mapPoint({ q: 52, r: 70 });
+
+  session = dispatchCommand(session, {
+    type: "issue_formation_order",
+    unitId: leader.id,
+    target: leader.coord,
+    formation: "line",
+    communication: "radio",
+    direction: "SE",
+    issuedAt: session.world.time,
+  });
+
+  const orderId = session.world.activeFormation?.orderId;
+  assert.ok(orderId);
+  const receptions = session.events.filter((event) => event.type === "order_delivery_resolved" && event.payload.orderId === orderId);
+  assert.equal(receptions.filter((event) => event.payload.status === "received").length, 8);
+  assert.ok(
+    receptions.some(
+      (event) =>
+        event.payload.unitId === "FRIENDLY_6" &&
+        event.payload.status === "received" &&
+        event.payload.reason === "radio_relay",
+    ),
+  );
 });
 
 test("forward movement waits when a neighbour falls too far behind", () => {
@@ -464,6 +505,13 @@ test("framåt after halt recalculates the new bearing from true position", () =>
   for (let step = 0; step < 80 && session.world.activeFormation?.phase !== "advancing"; step += 1) {
     session = advanceSession(session, 0.2, { random: () => 1 });
   }
+  const advancingLeader = session.world.unitsById[leader.id];
+  session = dispatchCommand(session, {
+    type: "move_to_hex",
+    unitId: leader.id,
+    target: { q: advancingLeader.coord.q + 4, r: advancingLeader.coord.r },
+    issuedAt: session.world.time,
+  });
   for (let step = 0; step < 10; step += 1) {
     session = advanceSession(session, 0.2, { random: () => 1 });
   }
@@ -500,13 +548,18 @@ test("framåt after halt recalculates the new bearing from true position", () =>
     session = advanceSession(session, 0.2, { random: () => 1 });
   }
   assert.equal(session.world.activeFormation?.phase, "advancing");
+  session = dispatchCommand(session, {
+    type: "move_to_hex",
+    unitId: leader.id,
+    target: mapPointToHex({ x: haltedLeader.position.x, y: haltedLeader.position.y + 18 }),
+    issuedAt: session.world.time,
+  });
   for (let step = 0; step < 6; step += 1) {
     session = advanceSession(session, 0.2, { random: () => 1 });
   }
 
   const movingLeader = session.world.unitsById[leader.id];
   assert.ok(movingLeader.position.y > haltedLeader.position.y);
-  assert.ok(Math.abs(movingLeader.position.x - haltedLeader.position.x) < 0.001);
 });
 
 test("framåt while advancing relays gesture and preserves forward progress", () => {
@@ -535,6 +588,13 @@ test("framåt while advancing relays gesture and preserves forward progress", ()
   for (let step = 0; step < 100 && session.world.activeFormation?.phase !== "advancing"; step += 1) {
     session = advanceSession(session, 0.2, { random: () => 1 });
   }
+  const leaderAtAdvance = session.world.unitsById[leader.id];
+  session = dispatchCommand(session, {
+    type: "move_to_hex",
+    unitId: leader.id,
+    target: { q: leaderAtAdvance.coord.q + 5, r: leaderAtAdvance.coord.r },
+    issuedAt: session.world.time,
+  });
   for (let step = 0; step < 8; step += 1) {
     session = advanceSession(session, 0.2, { random: () => 1 });
   }

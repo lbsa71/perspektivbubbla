@@ -1,17 +1,17 @@
 # Technical Plan
 
-## Recommended Stack
+## Current Stack
 
-- React or Next.js
-- TypeScript
-- SVG or Canvas for the hex map
-- Node-based backend API for authoritative sessions
-- WebSocket session channel for realtime commands and projections
-- Shared/headless simulation core
-- Client state limited to view/input state
-- JSON-based scenarios
-- In-memory backend event store initially, behind replaceable service/provider/repository interfaces
-- Event-sourced session log from Phase 1
+- TypeScript across core, server, and browser client.
+- Node-based backend API for authoritative sessions.
+- WebSocket session channel for realtime commands and projections.
+- Shared/headless simulation core.
+- Static browser client served by Vite.
+- SVG-rendered pointy-top hex map.
+- Client state limited to view/input state.
+- In-memory session/event state initially, with the code shaped so durable storage can replace it later.
+- Event-sourced session log from the first implementation slice.
+- JSON-based scenarios remain planned, but are not yet the current scenario source.
 
 ## Core Architecture Principle
 
@@ -29,10 +29,27 @@ See [ADR 0001](../adr/0001-backend-state-store-and-headless-core.md), [ADR 0002]
 
 The client must not directly mutate game state or duplicate game rules.
 
+## Current Implementation Notes
+
+The prototype has moved beyond the original one-soldier slice. The current core supports both a one-soldier scenario and a group commander scenario. The group commander scenario contains 8 friendly soldiers: grpc, stf grpc, and two tät.
+
+Important current constraints:
+
+- True map coordinates are the source of truth for unit position, direction vectors, formation slots, and advance targets.
+- Hex coordinates are derived for pathing, occupancy, terrain lookup, visibility projection, and rendering.
+- Formation orders and forward movement are separate concepts. A formation order means "get into this formation"; `framåt` means "prepare to advance using the current or supplied formation and direction"; `halt` stops the group.
+- Communication mode is a modifier on an order, not an action by itself.
+- Voice and gesture exist in the core. Radio is still planned.
+- The grpc must remain an embodied soldier. Group advance should be driven by the player's normal click-movement through terrain after `framåt`, not by a detached group autopilot.
+- No two soldiers may occupy the same hex at the same time.
+- Soldiers may route around each other while reforming, but must preserve formation-neighbour cohesion while advancing.
+- Visibility uses the soldier's true position and fades recently seen hexes before they become unknown again.
+
 ```ts
 type WorldState = {
   units: Unit[];
   events: GameEvent[];
+  activeFormation?: FormationState;
 };
 
 type PerceivedState = {
@@ -59,10 +76,12 @@ type PerceivedState = {
 12. `MovementSystem`
 13. `CommunicationSystem`
 14. `OrderSystem`
-15. `EventSystem`
-16. `ScenarioRunner`
-17. `AARRecorder`
-18. `AARViewer`
+15. `FormationSystem`
+16. `CohesionSystem`
+17. `EventSystem`
+18. `ScenarioRunner`
+19. `AARRecorder`
+20. `AARViewer`
 
 ## Game State
 
@@ -96,7 +115,7 @@ type DomainEvent = {
 };
 ```
 
-Phase 1 should record at least:
+The current foundation should record at least:
 
 - session started
 - scenario generated
@@ -113,6 +132,12 @@ Phase 1 should record at least:
 - opposing unit moved to cover
 - abstract return-fire/contact-pressure event emitted
 - objective succeeded/failed/transitioned
+- formation order issued
+- order delivery resolved, including relay sender and failure reason
+- formation movement assigned
+- formation advance started
+- group halted
+- movement waiting, including cohesion or separation reason
 
 The first event store can be in memory, but it must sit behind interfaces that make durable storage pluggable later.
 
@@ -145,12 +170,47 @@ type PlayerCommand =
       unitId: string;
       posture: "standing" | "crouched" | "prone";
       issuedAt: number;
+    }
+  | {
+      type: "issue_formation_order";
+      unitId: string;
+      target: HexCoord;
+      formation: Formation;
+      communication: CommunicationMethod;
+      direction?: Direction;
+      directionTarget?: HexCoord;
+      directionTargetPoint?: MapPoint;
+      issuedAt: number;
+    }
+  | {
+      type: "issue_forward_order";
+      unitId: string;
+      formation: Formation;
+      communication: CommunicationMethod;
+      direction?: Direction;
+      directionTarget?: HexCoord;
+      directionTargetPoint?: MapPoint;
+      issuedAt: number;
+    }
+  | {
+      type: "halt_group";
+      unitId: string;
+      issuedAt: number;
     };
 ```
 
-For Phase 1, a movement click starts moving toward the selected hex. New movement, posture, or body-facing commands interrupt current movement. Look/sweep commands refresh field of view without interrupting movement, unless the sweep crosses the body-orientation threshold and becomes an orientation change. The UI should not compute or own pathfinding rules.
+For the one-soldier loop, a movement click starts moving toward the selected hex. New movement, posture, or body-facing commands interrupt current movement. Look/sweep commands refresh field of view without interrupting movement, unless the sweep crosses the body-orientation threshold and becomes an orientation change. The UI should not compute or own pathfinding rules.
 
 The player may click any target hex. The backend owns pathing and computes a simple nearest path. If the path hits an obstacle, movement stops and the event log records why.
+
+For the group-commander loop, formation and movement must remain explicit:
+
+- `issue_formation_order` assigns formation slots and starts reformation only.
+- `issue_forward_order` may first form up, then arms an advance state along the indicated true-map bearing.
+- `halt_group` interrupts received group movement.
+- `communication` controls propagation and reliability; it must not initiate behavior by itself.
+- `directionTargetPoint` is preferred when available so true map bearings do not collapse into hex-axis approximations.
+- Once advance is armed, the player still moves the grpc with ordinary movement clicks. Followers derive their desired positions from the embodied grpc, the formation direction, their element/position, and neighbour cohesion. If the grpc stops, nearby soldiers should stop for the same cohesion reasons they would stop for any other formation neighbour.
 
 ## Simulated Realtime
 
@@ -164,14 +224,14 @@ The player may click any target hex. The backend owns pathing and computes a sim
 
 ## Map Scale
 
-- Phase 1 target scale: 3 meters per hex.
+- Current target scale: 3 meters per hex.
 - A 300x300 meter scenario map is therefore roughly 100x100 hexes.
 - Important scenario markers should be static.
 - Surrounding terrain should be deterministic generated content.
 
 ## Opposing Unit and Detection Model
 
-Detection should be probabilistic in Phase 1. Inputs should include exposure, cover, concealment, posture, line of sight, and opposing-unit observer state.
+Detection should remain probabilistic in the current foundation. Inputs should include exposure, cover, concealment, posture, line of sight, and opposing-unit observer state.
 
 Threats are explicit opposing units. They should support simple heuristics only:
 
@@ -184,9 +244,32 @@ Threats are explicit opposing units. They should support simple heuristics only:
 
 Return fire must remain abstract. It should drive pressure, exposure, scenario state, and AAR, not detailed weapons simulation.
 
+## Group Orders and Formation Movement
+
+Group orders are first-class domain events, not UI conveniences. The core should keep enough information to explain which soldier received an order, who relayed it, why it failed, and which movement motivation caused a soldier to move or wait.
+
+Current order model:
+
+- Formation order: assigns local formation targets around the group.
+- Forward order: uses the current or supplied formation, forms up if needed, then arms group advance along a true-map bearing.
+- Halt order: stops every friendly soldier that received it.
+- Communication mode: currently voice or gesture; radio remains planned.
+
+Current formation model:
+
+- A group has 8 friendly soldiers.
+- grpc and stf grpc stay close.
+- The rest of the group is split into `tat_1` and `tat_2`.
+- Each soldier has an element and element position.
+- Formations produce true-coordinate offsets that are later snapped to passable hex targets.
+- During advance, soldiers resolve several motivations: embodied grpc position and movement intent, assigned slot, formation center, advance direction, neighbours, occupied hexes, and terrain/pathing.
+- The grpc participates in cohesion like any other soldier. Being the commander gives the player authority to issue orders, not exemption from movement, terrain, or neighbour tempo.
+
+Design rule: the no-shared-hex invariant is absolute for actual soldier positions. Movement planning may consider crossing/route-around behavior, but committed world state must never place two soldiers in the same hex.
+
 ## Future Observer Client
 
-Phase 1 does not need a separate observer/instructor client. It should still keep projections role-scoped so an observer projection can be added later if the MVP bears fruit.
+The current prototype does not need a separate observer/instructor client. It should still keep projections role-scoped so an observer projection can be added later if the MVP bears fruit.
 
 ## Minimal TypeScript Data Model
 
@@ -206,12 +289,19 @@ type HexTile = {
 };
 
 type Direction = "N" | "NE" | "SE" | "S" | "SW" | "NW";
+type MapPoint = { x: number; y: number };
+type Formation = "column" | "line" | "file" | "wedge" | "dispersed" | "regroup";
+type CommunicationMethod = "voice" | "gesture" | "radio";
+type GroupElement = "command" | "tat_1" | "tat_2";
 
 type Unit = {
   id: string;
   name: string;
   side: "friendly" | "opposing";
-  role: "leader" | "soldier";
+  role: "leader" | "deputy_leader" | "soldier" | "observer";
+  element?: GroupElement;
+  elementPosition?: number;
+  position: MapPoint;
   coord: HexCoord;
   facing: Direction;
   lookDirection?: Direction;
@@ -221,6 +311,21 @@ type Unit = {
   posture: "standing" | "crouched" | "prone" | "moving" | "helping" | "injured";
   status: string[];
   currentOrderId?: string;
+};
+
+type FormationState = {
+  orderId: string;
+  orderKind: "formation" | "forward";
+  phase?: "forming" | "advancing";
+  formation: Formation;
+  target: HexCoord;
+  targetPoint: MapPoint;
+  advanceTarget?: HexCoord;
+  advanceTargetPoint?: MapPoint;
+  direction: Direction;
+  directionVector?: MapPoint;
+  communication: CommunicationMethod;
+  issuedAt: number;
 };
 
 type PerceivedUnit = {
@@ -256,7 +361,7 @@ type Order = {
     | "regroup";
   targetCoord?: HexCoord;
   direction?: Direction;
-  communication: "voice" | "gesture" | "radio";
+  communication: CommunicationMethod;
 };
 
 type AAREvent = {
@@ -279,28 +384,37 @@ type AAREvent = {
 - Keep scenario fixtures small, named, and easy to inspect.
 - Do not encode exact tactical or medical instruction beyond the abstract training scope in the product brief.
 
-## First Vertical Slice
+## Implemented Vertical Slice
 
-The first implementation slice should include:
+The implemented foundation now includes:
 
 1. Backend session creation and in-memory authoritative state.
 2. WebSocket command/projection channel.
 3. Event-sourced session log with deterministic projections.
-4. One player soldier with position, facing, look direction, and posture.
-5. A larger Scenario A map with viewport pan/zoom, representing roughly 300x300 meters at 3 meters per hex.
-6. Hybrid map generation: static important markers and deterministic generated terrain.
-7. Explicit opposing observer units with simple heuristics.
-8. Click-issued movement commands to any target hex, with backend-owned simple nearest pathing.
-9. Movement stops if the path hits an obstacle.
-10. Free look/sweep through mouse and keyboard, with large sweeps bleeding into orientation change.
-11. Explicit posture and orientation commands.
-12. Terrain movement cost and movement rate over simulated time.
-13. Probabilistic detection model driven by opposing units.
-14. Abstract return-fire/contact-pressure events.
-15. Cover/concealment/posture-aware exposure logging.
-16. Difficulty-dependent display of terrain/protection hints.
-17. Immediate field-of-view update with perceived information aging over time.
-18. Objective transitions after detection/failure.
-19. A minimal AAR summary projected from the event log.
+4. One-soldier scenario with position, true position, facing, look direction, posture, and movement.
+5. Group commander scenario with 8 friendly soldiers, grpc/stf grpc, and two tät.
+6. 100x100 map with viewport pan/zoom at 3 meters per hex.
+7. Hybrid map generation with static markers and deterministic generated terrain.
+8. Explicit opposing observer units with simple heuristics.
+9. Click-issued movement commands to any target hex, with backend-owned nearest pathing.
+10. Formation orders, forward orders, halt, regroup, and basic voice/gesture propagation.
+11. True-bearing direction targeting before snapping to hex pathing.
+12. Collision-aware reformation with no shared friendly hexes.
+13. Formation advance with neighbour cohesion.
+14. Immediate field-of-view update with perceived information aging over time.
+15. Probabilistic detection and abstract contact-pressure events.
+16. Minimal AAR/event summary projected from the event log.
 
-This slice should be production-tested before adding group movement, communication, injury, or advanced perception.
+## Next Technical Slice
+
+The next slice should make group command robust enough to become the base scenario loop:
+
+1. Add radio to the core command model.
+2. Record and expose full command propagation chains.
+3. Add command delay, missed order, and stale-order diagnostics.
+4. Rework group advance so `framåt` arms formation following around the embodied grpc, while grpc terrain movement still comes from player clicks.
+5. Expand movement motivation tests for sharp turns, re-forming, terrain, grpc stops, and neighbour catch-up.
+6. Add risk/effect zones and friendly blocking.
+7. Add perceived status, shouts, and report events.
+8. Move scenarios to JSON fixtures.
+9. Upgrade AAR from event feed to actual/perceived/commanded replay.

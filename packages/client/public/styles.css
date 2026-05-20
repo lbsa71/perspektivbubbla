@@ -503,6 +503,11 @@ button.is-active {
   fill: rgba(216, 195, 106, 0.07);
 }
 
+.order-range.radio {
+  stroke: rgba(112, 184, 214, 0.68);
+  fill: rgba(112, 184, 214, 0.05);
+}
+
 .intent {
   pointer-events: none;
 }

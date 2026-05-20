@@ -1,6 +1,6 @@
 type Direction = "N" | "NE" | "SE" | "S" | "SW" | "NW";
 type Formation = "column" | "line" | "file" | "wedge" | "dispersed" | "regroup";
-type CommunicationMethod = "voice" | "gesture";
+type CommunicationMethod = "voice" | "gesture" | "radio";
 
 type HexCoord = {
   q: number;
@@ -131,7 +131,7 @@ type PanDragState = {
 
 const directions: Direction[] = ["N", "NE", "SE", "S", "SW", "NW"];
 const formations: Formation[] = ["line", "file", "column", "wedge", "dispersed", "regroup"];
-const communications: CommunicationMethod[] = ["voice", "gesture"];
+const communications: CommunicationMethod[] = ["voice", "gesture", "radio"];
 const formationLabels: Record<Formation, string> = {
   line: "Skyttelinje",
   file: "Skytteled",
@@ -143,6 +143,7 @@ const formationLabels: Record<Formation, string> = {
 const communicationLabels: Record<CommunicationMethod, string> = {
   voice: "Röst",
   gesture: "Tecken",
+  radio: "Radio",
 };
 const baseHexSize = 8;
 const minZoom = 0.35;
@@ -402,7 +403,7 @@ function handleMapHexPointerUp(event: PointerEvent): void {
     return;
   }
 
-  if (projection.player.role === "leader") {
+  if (projection.player.role === "leader" && (!isEmbodiedAdvanceActive(projection) || event.shiftKey)) {
     const result = setDirectionCue(target, projection);
     logHexDirectionClick(result, projection, target);
     showHexTooltip(projection, target, event.clientX, event.clientY);
@@ -419,6 +420,7 @@ function handleMapHexPointerUp(event: PointerEvent): void {
     unitId: projection.player.id,
     target,
     time: projection.time,
+    embodiedAdvance: isEmbodiedAdvanceActive(projection),
   });
 }
 
@@ -560,9 +562,11 @@ function setHoverDetails(selector: string, details: string): void {
 function renderControls(): void {
   const voicePalette = document.querySelector("#voice-palette");
   const gesturePalette = document.querySelector("#gesture-palette");
-  if (voicePalette instanceof HTMLElement && gesturePalette instanceof HTMLElement) {
+  const radioPalette = document.querySelector("#radio-palette");
+  if (voicePalette instanceof HTMLElement && gesturePalette instanceof HTMLElement && radioPalette instanceof HTMLElement) {
     voicePalette.hidden = state.selectedCommunication !== "voice";
     gesturePalette.hidden = state.selectedCommunication !== "gesture";
+    radioPalette.hidden = state.selectedCommunication !== "radio";
   }
 
   document.querySelectorAll("[data-command='formation']").forEach((button) => {
@@ -747,6 +751,10 @@ function hexTooltipMarkup(projection: Projection, coord: HexCoord): string {
     projection.player.role === "leader"
       ? `Klick: sätt riktning hit (${direction})`
       : "Klick: förflytta till hexen";
+  const embodiedActionText =
+    projection.player.role === "leader" && isEmbodiedAdvanceActive(projection)
+      ? `Klick: förflytta grpc hit; shift-klick: sätt riktning (${direction})`
+      : actionText;
   const visibility = tile?.visibility ?? "unknown";
   const known = visibility !== "unknown";
   const terrain = known ? (tile?.terrain ?? "unknown") : "unknown";
@@ -771,7 +779,7 @@ function hexTooltipMarkup(projection: Projection, coord: HexCoord): string {
       <dt>enheter</dt><dd>${escapeHtml(unitLine)}</dd>
       ${markerLine ? `<dt>markering</dt><dd>${escapeHtml(markerLine)}</dd>` : ""}
     </dl>
-    <div class="hex-tooltip-action">${escapeHtml(actionText)}</div>
+    <div class="hex-tooltip-action">${escapeHtml(embodiedActionText)}</div>
   `;
 }
 
@@ -1199,8 +1207,12 @@ function displayElementPosition(unit: UnitProjection): string {
 }
 
 function orderRangePixels(size: number): number {
-  const range = state.selectedCommunication === "gesture" ? 8 : 10;
+  const range = state.selectedCommunication === "gesture" ? 8 : state.selectedCommunication === "radio" ? 24 : 10;
   return range * size * 1.55;
+}
+
+function isEmbodiedAdvanceActive(projection: Projection): boolean {
+  return projection.activeFormation?.orderKind === "forward" && projection.activeFormation.phase === "advancing";
 }
 
 function setConnection(value: string): void {

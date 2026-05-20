@@ -8,9 +8,11 @@ The v0.1 goal is to prove one question:
 
 ## Current Status
 
-This repository has a runnable Phase 1 implementation slice. The former design-bible README has been split into focused planning artifacts under [docs/project](docs/project).
+This repository has a runnable backend-authoritative prototype with a semi-functioning group commander interface. The current slice includes one-soldier movement/perception basics, simple opposing observers, and an 8-soldier group commander scenario with grpc, stf grpc, two tät, formation orders, `framåt`, `halt`, voice/gesture propagation, true-coordinate movement, visibility memory, and a minimal event/AAR feed.
 
-## Run Phase 1
+The former design-bible README has been split into focused planning artifacts under [docs/project](docs/project). The roadmap has been rearranged so the next phase is group-command fidelity rather than the older one-soldier/two-soldier sequence.
+
+## Run Prototype
 
 Requirements:
 
@@ -39,7 +41,7 @@ Vite serves the client at [http://127.0.0.1:5173](http://127.0.0.1:5173) and pro
 - [Product brief](docs/project/01-product-brief.md) - concept, goals, non-goals, core loop, and success criteria.
 - [Game design](docs/project/02-game-design.md) - perception bubble, hex model, movement, communication, injury abstraction, AAR, and difficulty levels.
 - [Scenarios](docs/project/03-scenarios.md) - the three v0.1 scenarios and what each one validates.
-- [Technical plan](docs/project/04-technical-plan.md) - recommended stack, architecture boundaries, modules, and starter TypeScript model.
+- [Technical plan](docs/project/04-technical-plan.md) - current stack, architecture boundaries, modules, and TypeScript model.
 - [Roadmap](docs/project/05-roadmap.md) - incremental implementation phases and backlog priorities.
 - [Validation plan](docs/project/06-validation-plan.md) - playtest plan, risks, mitigations, and v0.1 done definition.
 
@@ -103,4 +105,4 @@ v0.1 is not a full combat simulator. It should avoid detailed weapons simulation
 
 ## Implementation Starting Point
 
-Phase 1 currently includes a WebSocket-backed, event-sourced backend session with a headless TypeScript simulation core, one player soldier, simple opposing observer units, a scrollable/zoomable hex map, click-issued movement/orientation commands, exposure/contact logging, and a minimal event/AAR feed. Only add broader group-leader mechanics after that loop is playable and tested.
+The architecture foundation is in place: WebSocket-backed session, event-sourced command handling, headless TypeScript simulation core, dumb browser client, deterministic tests, and a minimal event/AAR projection. The active implementation focus is now group-command fidelity: embodied grpc movement, command propagation, formation movement, neighbour cohesion, risk/effect zones, reports/status uncertainty, and then injury/buddy-aid scenarios.
