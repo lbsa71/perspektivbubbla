@@ -190,7 +190,7 @@ button.is-active {
 
 .mode-tabs {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 6px;
   margin-bottom: 10px;
   padding: 3px;
@@ -488,6 +488,53 @@ button.is-active {
 
 .unit-marker {
   pointer-events: none;
+}
+
+.unit-marker.unit-risk circle {
+  stroke: #f0d86f;
+  stroke-width: 3;
+}
+
+.effect-zone {
+  fill: rgba(240, 216, 111, 0.045);
+  stroke: rgba(240, 216, 111, 0.12);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.effect-zone.is-blocked {
+  fill: rgba(208, 101, 91, 0.22);
+  stroke: rgba(240, 216, 111, 0.78);
+  stroke-width: 2;
+}
+
+.effect-zone.severity-medium {
+  fill: rgba(216, 195, 106, 0.18);
+}
+
+.effect-zone.severity-high {
+  fill: rgba(208, 101, 91, 0.26);
+}
+
+.blocking-warning {
+  pointer-events: none;
+}
+
+.blocking-warning line {
+  stroke: rgba(240, 216, 111, 0.8);
+  stroke-width: 2;
+  stroke-dasharray: 3 3;
+}
+
+.blocking-warning circle {
+  fill: none;
+  stroke: #f0d86f;
+  stroke-width: 2;
+}
+
+.blocking-warning.severity-high line,
+.blocking-warning.severity-high circle {
+  stroke: #d0655b;
 }
 
 .order-range {

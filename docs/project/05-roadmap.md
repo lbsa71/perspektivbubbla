@@ -19,25 +19,25 @@ Implemented enough to treat as foundation:
 - Group commander scenario with 8 friendly soldiers: grpc, stf grpc, and two tät.
 - Formation orders for line, file, column, wedge, dispersed, and regroup.
 - `framåt` and `halt` as explicit group movement commands.
-- Voice and gesture as communication modes for command propagation.
+- Voice, gesture, and radio as communication modes for command propagation.
 - Soldier-level order delivery events, including relays through neighbours.
 - Two-phase forward movement: form up, then advance.
 - Hard invariant that no two soldiers occupy the same hex at the same time.
 - Collision-aware reformation around occupied friendly hexes.
 - Cohesion checks so soldiers wait when formation neighbours lag or separate.
-- Minimal commander UI with hover panels, direction marker, and formation diagnostics.
-- Tests for group order delivery, formation slots, no shared hexes, true-bearing movement, halt, no-halt turns, neighbour cohesion, projections, replay, and WebSocket behavior.
+- Risk/effect-zone projection, friendly blocking diagnostics, and simple coverage checks for the two tät.
+- Perceived friendly status projection with confidence, age, last-known positions, heard events, and short status reports.
+- Minimal commander UI with hover panels, direction marker, formation diagnostics, effect-zone overlays, and perception/report hovers.
+- Tests for group order delivery, formation slots, no shared hexes, true-bearing movement, halt, no-halt turns, neighbour cohesion, risk zones, perception projections, replay, and WebSocket behavior.
 
 Still missing or incomplete:
 
-- Radio is not modeled in the core.
-- Risk/effect zones and friendly blocking are not implemented.
-- Shout/report/status uncertainty is not yet a real information system.
+- Command delay, misunderstood orders, and stale-order handling are still simplified.
+- Shout/report/status uncertainty exists as a first projection slice, but not yet as a full information game.
 - Injury and buddy aid are not implemented.
 - AAR is still a minimal event summary rather than an instructive replay.
 - Scenario content is not yet JSON-authored.
 - Difficulty modes are not implemented.
-- The grpc is not yet fully treated as an embodied soldier for group advance: `framåt` should set formation intent, but the player should still click-move the grpc through terrain.
 - The group movement model works, but still needs play-feel hardening around turns, command delay, terrain, and neighbour motivation.
 
 ## Phase 1: Foundation and Group Commander Sandbox
@@ -145,6 +145,10 @@ Make direction and spacing matter beyond formation neatness.
 - Integrate risk/effect zones with formation spacing and movement.
 - Add simple coverage checks for the two tät.
 
+### Status
+
+First implementation slice is in place. The core projects friendly effect zones, detects blocker pairs, logs blocking/poor coverage into the event/AAR stream, nudges formation movement away from friendly effect zones, and the client renders visible training-mode overlays and hover diagnostics. Scenario B still needs authored setup and a stronger AAR lesson view.
+
 ### Scenario
 
 Scenario B: Two Soldiers and Group Line - Risk Zone and Blocking.
@@ -175,6 +179,10 @@ Turn limited perception from a visibility effect into the central decision probl
 - Limited status display; no perfect omniscient roster.
 - Training, normal, and realistic information modes.
 - UI affordances for checking uncertainty without exposing hidden truth.
+
+### Status
+
+First implementation slice is in place. Player projections now include perceived units with confidence/source/age, heard events with approximate direction and clarity, and short status reports generated from blocking and movement waits. The current UI still defaults to a training-style view; normal/realistic filtering needs to become selectable and stricter.
 
 ### Question
 
@@ -249,17 +257,15 @@ Does the concept work as an educational game?
 
 ### Group Command
 
-- Add radio to the command model, not only the UI.
 - Persist and visualize command propagation per soldier.
 - Make order delay and missed relay visible in hovers/AAR.
 - Add command-id diagnostics to every movement wait/stop.
 - Split "set direction" from "advance" everywhere in UI and tests.
-- Rework `framåt` so it arms formation advance around the embodied grpc instead of issuing an autonomous long-range group move.
+- Add explicit delayed/misunderstood/stale order states beyond the current received/missed result.
 
 ### Formation Movement
 
 - Tune motivated movement weights for turns, re-forming, and neighbour catch-up.
-- Make follower movement derive from the grpc's actual clicked movement path plus the formation direction.
 - Add terrain-aware formation movement.
 - Expand tests for 90-degree and 180-degree moving turns.
 - Test each formation with both tät and grpc/stf grpc constraints.
@@ -270,6 +276,7 @@ Does the concept work as an educational game?
 - Keep always-visible left-panel information minimal.
 - Move Unit, Group, Goal, Orders, soldier, and hex details into hovers.
 - Show direction reference as a dotted true-bearing line.
+- Show training-mode effect zones, blocking warnings, last-known confidence, and heard/report summaries without crowding the left panel.
 - Show why a soldier is waiting without revealing hidden world truth in normal mode.
 - Keep development diagnostics available through console logs and optional overlays.
 

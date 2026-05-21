@@ -38,6 +38,71 @@ export type ProjectedHexTile = HexTile & {
   memoryOpacity?: number;
 };
 
+export type InformationMode = "training" | "normal" | "realistic";
+
+export type EffectZoneProjection = {
+  unitId: string;
+  facing: Direction;
+  lookDirection: Direction;
+  hexes: HexCoord[];
+  blockedByUnitId?: string;
+  blockedAt?: HexCoord;
+  severity?: "low" | "medium" | "high";
+};
+
+export type FriendlyBlockingProjection = {
+  unitId: string;
+  blockingUnitId: string;
+  coord: HexCoord;
+  distanceHexes: number;
+  severity: "low" | "medium" | "high";
+  reason: "friendly_in_effect_zone";
+};
+
+export type CoverageCheckProjection = {
+  element: GroupElement;
+  covered: boolean;
+  coveringUnitIds: string[];
+  expectedDirection: Direction;
+  reason?: "no_members" | "poor_orientation" | "blocked_effect_zone";
+};
+
+export type PerceivedUnitProjection = {
+  unitId: string;
+  name: string;
+  side: Side;
+  role: UnitRole;
+  element?: GroupElement;
+  elementPosition?: number;
+  perceivedCoord?: HexCoord;
+  visible: boolean;
+  lastSeenAt?: number;
+  age?: number;
+  confidence: "high" | "medium" | "low" | "unknown";
+  perceivedStatus: "ok" | "possibly_injured" | "injured" | "unknown";
+  source: "visual" | "memory" | "report" | "roster";
+};
+
+export type HeardEventProjection = {
+  id: string;
+  time: number;
+  kind: "order" | "movement" | "contact" | "report";
+  sourceUnitId?: string;
+  approximateDirection: Direction;
+  clarity: "clear" | "partial" | "muffled";
+  text: string;
+};
+
+export type ReportProjection = {
+  id: string;
+  time: number;
+  sourceUnitId: string;
+  kind: "status" | "movement_wait" | "blocking";
+  message: string;
+  coord: HexCoord;
+  confidence: "high" | "medium" | "low";
+};
+
 export type UnitIntent =
   | { type: "idle" }
   | { type: "moving"; target: HexCoord; targetPoint: MapPoint; path: HexCoord[]; progress: number };
@@ -217,10 +282,24 @@ export type Projection = {
   player: Unit;
   units: Unit[];
   events: DomainEvent[];
+  risk: {
+    effectZones: EffectZoneProjection[];
+    blocking: FriendlyBlockingProjection[];
+    coverage: CoverageCheckProjection[];
+  };
+  perception: {
+    informationMode: InformationMode;
+    lastKnownUnits: PerceivedUnitProjection[];
+    heardEvents: HeardEventProjection[];
+    reports: ReportProjection[];
+  };
   aar: {
     route: HexCoord[];
     exposureSamples: Array<{ time: number; unitId: string; exposure: number }>;
     contactEvents: DomainEvent[];
+    blockingEvents: DomainEvent[];
+    reportEvents: DomainEvent[];
+    heardEvents: HeardEventProjection[];
   };
 };
 
@@ -246,6 +325,8 @@ const FORMATION_NEIGHBOUR_WEIGHT = 2.4;
 const FORMATION_FORWARD_WEIGHT = 0.9;
 const FORMATION_TERRAIN_WEIGHT = 0.4;
 const VISIBILITY_MEMORY_SECONDS = 10;
+const EFFECT_ZONE_RANGE_HEXES = 6;
+const HEARD_EVENT_WINDOW_SECONDS = 12;
 
 export function createPhaseOneSession(options: CreateSessionOptions = {}): Session {
   const seed = options.seed ?? "phase-one";
@@ -428,6 +509,14 @@ export function advanceSession(session: Session, seconds: number, options: Advan
   const exposureEvents = collectExposureEvents(next.world);
   next = appendAndApply(next, exposureEvents.map((event) => buildEvent(next, event.type, event.payload)));
 
+  const shouldSampleRisk =
+    Math.floor(next.world.time) !== Math.floor(session.world.time) ||
+    movementEvents.some((event) => event.type === "movement_waiting" || event.type === "movement_blocked");
+  if (shouldSampleRisk) {
+    const riskAndInformationEvents = collectRiskAndInformationEvents(next, movementEvents);
+    next = appendAndApply(next, riskAndInformationEvents.map((event) => buildEvent(next, event.type, event.payload)));
+  }
+
   const opposingEvents = collectOpposingUnitEvents(next.world, random);
   return appendAndApply(next, opposingEvents.map((event) => buildEvent(next, event.type, event.payload)));
 }
@@ -438,6 +527,9 @@ export function projectSession(session: Session, role: "player" | "observer" = "
   const visibleKeys = new Set(visibleHexes.map(hexKey));
   const rememberedHexes = session.world.visibilityMemory?.[player.id] ?? {};
   const events = projectionEvents(session).map(summarizeEventForProjection);
+  const risk = riskProjection(session.world);
+  const heardEvents = heardEventsFor(session, player, role);
+  const reports = reportProjection(session);
 
   return {
     sessionId: session.id,
@@ -461,6 +553,13 @@ export function projectSession(session: Session, role: "player" | "observer" = "
         ? session.world.units.map(clone)
         : session.world.units.filter((unit) => unit.side === "friendly" || visibleKeys.has(hexKey(unit.coord))).map(clone),
     events,
+    risk,
+    perception: {
+      informationMode: "training",
+      lastKnownUnits: perceivedUnitsFor(session, player, visibleKeys, rememberedHexes, role),
+      heardEvents,
+      reports,
+    },
     aar: {
       route: session.events
         .filter((event) => event.type === "unit_moved" && event.payload.unitId === player.id)
@@ -475,6 +574,9 @@ export function projectSession(session: Session, role: "player" | "observer" = "
       contactEvents: session.events
         .filter((event) => event.type === "probabilistic_detection_resolved" || event.type === "contact_pressure_emitted")
         .map(clone),
+      blockingEvents: session.events.filter((event) => event.type === "friendly_effect_blocked" || event.type === "tat_coverage_gap").map(clone),
+      reportEvents: session.events.filter((event) => event.type === "status_report_emitted").map(clone),
+      heardEvents,
     },
   };
 }
@@ -521,7 +623,7 @@ function projectionEvents(session: Session): DomainEvent[] {
   for (const event of session.events.slice(-40)) {
     byId.set(event.id, event);
   }
-  for (const event of session.events.filter(isOrderFlowEvent).slice(-30)) {
+  for (const event of session.events.filter(isOrderFlowEvent).slice(-80)) {
     byId.set(event.id, event);
   }
   return [...byId.values()].sort((a, b) => a.sequence - b.sequence);
@@ -540,7 +642,11 @@ function isOrderFlowEvent(event: DomainEvent): boolean {
     event.type === "movement_interrupted" ||
     event.type === "movement_blocked" ||
     event.type === "movement_waiting" ||
-    event.type === "movement_completed"
+    event.type === "movement_completed" ||
+    event.type === "friendly_effect_blocked" ||
+    event.type === "poor_orientation_detected" ||
+    event.type === "tat_coverage_gap" ||
+    event.type === "status_report_emitted"
   );
 }
 
@@ -1783,6 +1889,7 @@ function formationMotivationScore(
   score += mapDistanceInHexes(candidatePoint, formationCenter) * FORMATION_CENTER_WEIGHT;
   score -= Math.max(0, candidateProgress - currentProgress) * FORMATION_FORWARD_WEIGHT;
   score += (tile?.moveCost ?? 1) * FORMATION_TERRAIN_WEIGHT;
+  score += effectZoneInterferencePenalty(world, unit.id, candidate);
   if (sameCoord(candidate, unit.coord) && !sameCoord(candidate, unit.intent.target)) {
     score += 1.25;
   }
@@ -1956,6 +2063,444 @@ function collectExposureEvents(world: WorldState): Array<{ type: string; payload
         },
       };
     });
+}
+
+function collectRiskAndInformationEvents(
+  session: Session,
+  movementEvents: Array<{ type: string; payload: Record<string, unknown> }>,
+): Array<{ type: string; payload: Record<string, unknown> }> {
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  const world = session.world;
+  const risk = riskProjection(world);
+
+  for (const blocking of risk.blocking) {
+    const alreadyLogged = hasPriorEvent(
+      session,
+      "friendly_effect_blocked",
+      (event) =>
+        event.payload.unitId === blocking.unitId &&
+        event.payload.blockingUnitId === blocking.blockingUnitId &&
+        event.payload.severity === blocking.severity,
+    );
+    if (alreadyLogged) {
+      continue;
+    }
+    events.push({
+      type: "friendly_effect_blocked",
+      payload: {
+        unitId: blocking.unitId,
+        blockingUnitId: blocking.blockingUnitId,
+        coord: blocking.coord,
+        distanceHexes: blocking.distanceHexes,
+        severity: blocking.severity,
+        reason: blocking.reason,
+      },
+    });
+    if (
+      blocking.severity === "high" &&
+      !hasPriorEvent(
+        session,
+        "status_report_emitted",
+        (event) =>
+          event.payload.kind === "blocking" &&
+          event.payload.sourceUnitId === blocking.unitId &&
+          event.payload.relatedUnitId === blocking.blockingUnitId,
+      )
+    ) {
+      events.push({
+        type: "status_report_emitted",
+        payload: {
+          sourceUnitId: blocking.unitId,
+          kind: "blocking",
+          message: "fri sikt/effektzon blockerad av kamrat",
+          coord: blocking.coord,
+          confidence: "high",
+          relatedUnitId: blocking.blockingUnitId,
+        },
+      });
+    }
+  }
+
+  for (const coverage of risk.coverage) {
+    if (coverage.covered) {
+      continue;
+    }
+    if (
+      hasPriorEvent(
+        session,
+        "tat_coverage_gap",
+        (event) =>
+          event.payload.element === coverage.element &&
+          event.payload.expectedDirection === coverage.expectedDirection &&
+          event.payload.reason === (coverage.reason ?? "poor_orientation"),
+      )
+    ) {
+      continue;
+    }
+    events.push({
+      type: "tat_coverage_gap",
+      payload: {
+        element: coverage.element,
+        expectedDirection: coverage.expectedDirection,
+        reason: coverage.reason ?? "poor_orientation",
+      },
+    });
+  }
+
+  for (const event of movementEvents) {
+    if (event.type !== "movement_waiting") {
+      continue;
+    }
+    const unit = world.unitsById[String(event.payload.unitId)];
+    if (!unit || unit.side !== "friendly") {
+      continue;
+    }
+    const reason = String(event.payload.reason ?? "okänd orsak");
+    if (
+      hasRecentEvent(
+        session,
+        "status_report_emitted",
+        3,
+        (candidate) =>
+          candidate.payload.kind === "movement_wait" &&
+          candidate.payload.sourceUnitId === unit.id &&
+          candidate.payload.message === `väntar: ${reason}`,
+      )
+    ) {
+      continue;
+    }
+    events.push({
+      type: "status_report_emitted",
+      payload: {
+        sourceUnitId: unit.id,
+        kind: "movement_wait",
+        message: `väntar: ${reason}`,
+        coord: unit.coord,
+        confidence: "medium",
+        relatedUnitId: event.payload.neighbourId,
+      },
+    });
+  }
+
+  const expectedDirection = world.activeFormation?.direction;
+  if (expectedDirection) {
+    for (const unit of world.units.filter((candidate) => candidate.side === "friendly")) {
+      if (directionDelta(unit.lookDirection, expectedDirection) <= 1) {
+        continue;
+      }
+      if (
+        hasPriorEvent(
+          session,
+          "poor_orientation_detected",
+          (event) =>
+            event.payload.unitId === unit.id &&
+            event.payload.lookDirection === unit.lookDirection &&
+            event.payload.expectedDirection === expectedDirection,
+        )
+      ) {
+        continue;
+      }
+      events.push({
+        type: "poor_orientation_detected",
+        payload: {
+          unitId: unit.id,
+          lookDirection: unit.lookDirection,
+          expectedDirection,
+          reason: "poor_orientation",
+        },
+      });
+    }
+  }
+
+  return events;
+}
+
+function hasPriorEvent(session: Session, type: string, predicate: (event: DomainEvent) => boolean): boolean {
+  return session.events.some((event) => event.type === type && predicate(event));
+}
+
+function hasRecentEvent(
+  session: Session,
+  type: string,
+  seconds: number,
+  predicate: (event: DomainEvent) => boolean,
+): boolean {
+  return session.events.some(
+    (event) => event.type === type && session.world.time - event.time <= seconds && predicate(event),
+  );
+}
+
+function riskProjection(world: WorldState): Projection["risk"] {
+  const effectZones = world.units
+    .filter((unit) => unit.side === "friendly")
+    .map((unit) => effectZoneForUnit(world, unit));
+  const blocking = effectZones
+    .filter(
+      (
+        zone,
+      ): zone is EffectZoneProjection & {
+        blockedByUnitId: string;
+        blockedAt: HexCoord;
+        severity: "low" | "medium" | "high";
+      } => Boolean(zone.blockedByUnitId && zone.blockedAt && zone.severity),
+    )
+    .map((zone) => ({
+      unitId: zone.unitId,
+      blockingUnitId: zone.blockedByUnitId,
+      coord: zone.blockedAt,
+      distanceHexes: hexDistance(world.unitsById[zone.unitId].coord, zone.blockedAt),
+      severity: zone.severity,
+      reason: "friendly_in_effect_zone" as const,
+    }));
+
+  return {
+    effectZones,
+    blocking,
+    coverage: coverageChecks(world, effectZones),
+  };
+}
+
+function effectZoneForUnit(world: WorldState, unit: Unit): EffectZoneProjection {
+  const hexes = coordsWithinRadius(unit.coord, EFFECT_ZONE_RANGE_HEXES)
+    .filter((coord) => inBounds(world.map, coord))
+    .filter((coord) => !sameCoord(coord, unit.coord))
+    .filter((coord) => isDirectionVisibleFromPoint(unit.lookDirection, unit.position, axialToMapPoint(coord)))
+    .filter((coord) => hasLineOfSight(world, unit.coord, coord))
+    .sort((a, b) => hexDistance(a, unit.coord) - hexDistance(b, unit.coord));
+  const blocker = hexes
+    .map((coord) => world.units.find((candidate) => candidate.side === "friendly" && candidate.id !== unit.id && sameCoord(candidate.coord, coord)))
+    .find((candidate): candidate is Unit => Boolean(candidate));
+  const blockedAt = blocker?.coord;
+  const distance = blockedAt ? hexDistance(unit.coord, blockedAt) : undefined;
+
+  return {
+    unitId: unit.id,
+    facing: unit.facing,
+    lookDirection: unit.lookDirection,
+    hexes,
+    blockedByUnitId: blocker?.id,
+    blockedAt: blockedAt ? clone(blockedAt) : undefined,
+    severity: typeof distance === "number" ? blockingSeverity(distance) : undefined,
+  };
+}
+
+function coverageChecks(world: WorldState, effectZones: EffectZoneProjection[]): CoverageCheckProjection[] {
+  const expectedDirection = world.activeFormation?.direction ?? world.units.find((unit) => unit.role === "leader")?.facing ?? "SE";
+  return (["tat_1", "tat_2"] as GroupElement[]).map((element) => {
+    const members = world.units.filter((unit) => unit.side === "friendly" && unit.element === element);
+    if (members.length === 0) {
+      return { element, covered: false, coveringUnitIds: [], expectedDirection, reason: "no_members" };
+    }
+    const coveringUnitIds = members
+      .filter((unit) => directionDelta(unit.lookDirection, expectedDirection) <= 1)
+      .filter((unit) => !effectZones.find((zone) => zone.unitId === unit.id && zone.severity === "high"))
+      .map((unit) => unit.id);
+    const reason =
+      coveringUnitIds.length > 0
+        ? undefined
+        : members.some((unit) => directionDelta(unit.lookDirection, expectedDirection) <= 1)
+          ? "blocked_effect_zone"
+          : "poor_orientation";
+    return {
+      element,
+      covered: coveringUnitIds.length > 0,
+      coveringUnitIds,
+      expectedDirection,
+      reason,
+    };
+  });
+}
+
+function blockingSeverity(distanceHexes: number): "low" | "medium" | "high" {
+  if (distanceHexes <= 2) return "high";
+  if (distanceHexes <= 4) return "medium";
+  return "low";
+}
+
+function effectZoneInterferencePenalty(world: WorldState, unitId: string, candidate: HexCoord): number {
+  let penalty = 0;
+  for (const other of world.units.filter((unit) => unit.side === "friendly" && unit.id !== unitId)) {
+    if (!isDirectionVisibleFromPoint(other.lookDirection, other.position, axialToMapPoint(candidate))) {
+      continue;
+    }
+    if (!hasLineOfSight(world, other.coord, candidate)) {
+      continue;
+    }
+    const distance = hexDistance(other.coord, candidate);
+    if (distance > EFFECT_ZONE_RANGE_HEXES) {
+      continue;
+    }
+    penalty += distance <= 2 ? 2.4 : distance <= 4 ? 1.4 : 0.7;
+  }
+  return penalty;
+}
+
+function perceivedUnitsFor(
+  session: Session,
+  observer: Unit,
+  visibleKeys: Set<string>,
+  rememberedHexes: Record<string, number>,
+  role: "player" | "observer",
+): PerceivedUnitProjection[] {
+  return session.world.units
+    .filter((unit) => role === "observer" || unit.side === "friendly" || visibleKeys.has(hexKey(unit.coord)))
+    .map((unit) => perceivedUnitFor(session, observer, visibleKeys, rememberedHexes, unit, role));
+}
+
+function perceivedUnitFor(
+  session: Session,
+  observer: Unit,
+  visibleKeys: Set<string>,
+  rememberedHexes: Record<string, number>,
+  unit: Unit,
+  role: "player" | "observer",
+): PerceivedUnitProjection {
+  const key = hexKey(unit.coord);
+  const visible = role === "observer" || unit.id === observer.id || visibleKeys.has(key);
+  const rememberedAt = rememberedHexes[key];
+  const latestReport = latestReportForUnit(session, unit.id);
+  const hasMemory = typeof rememberedAt === "number" && session.world.time - rememberedAt <= VISIBILITY_MEMORY_SECONDS;
+  const lastSeenAt = visible ? session.world.time : hasMemory ? rememberedAt : latestReport?.time;
+  const age = typeof lastSeenAt === "number" ? round(session.world.time - lastSeenAt) : undefined;
+  const source = visible ? "visual" : hasMemory ? "memory" : latestReport ? "report" : "roster";
+  const confidence =
+    visible || role === "observer"
+      ? "high"
+      : typeof age === "number" && age <= 5
+        ? "medium"
+        : typeof age === "number" && age <= VISIBILITY_MEMORY_SECONDS
+          ? "low"
+          : latestReport
+            ? latestReport.confidence
+            : "unknown";
+
+  return {
+    unitId: unit.id,
+    name: unit.name,
+    side: unit.side,
+    role: unit.role,
+    element: unit.element,
+    elementPosition: unit.elementPosition,
+    perceivedCoord: visible || hasMemory ? clone(unit.coord) : latestReport?.coord,
+    visible,
+    lastSeenAt,
+    age,
+    confidence,
+    perceivedStatus: perceivedStatusFor(unit, visible, latestReport),
+    source,
+  };
+}
+
+function perceivedStatusFor(
+  unit: Unit,
+  visible: boolean,
+  latestReport: ReportProjection | undefined,
+): PerceivedUnitProjection["perceivedStatus"] {
+  if (visible) {
+    return unit.posture === "injured" || unit.health <= 0 || unit.status.includes("injured") ? "injured" : "ok";
+  }
+  if (latestReport?.message.includes("skad")) {
+    return "possibly_injured";
+  }
+  return "unknown";
+}
+
+function heardEventsFor(session: Session, listener: Unit, role: "player" | "observer"): HeardEventProjection[] {
+  return session.events
+    .filter((event) => session.world.time - event.time <= HEARD_EVENT_WINDOW_SECONDS)
+    .flatMap((event) => heardEventForDomainEvent(session, listener, role, event))
+    .slice(-12);
+}
+
+function heardEventForDomainEvent(
+  session: Session,
+  listener: Unit,
+  role: "player" | "observer",
+  event: DomainEvent,
+): HeardEventProjection[] {
+  if (event.type === "order_delivery_resolved" && event.payload.status === "received") {
+    const source = session.world.unitsById[String(event.payload.unitId)];
+    if (!source) return [];
+    return [
+      heardEventFromSource(session, listener, role, event, source, "order", `${source.name} uppfattade ordern`),
+    ];
+  }
+  if (event.type === "status_report_emitted") {
+    const source = session.world.unitsById[String(event.payload.sourceUnitId)];
+    if (!source) return [];
+    return [
+      heardEventFromSource(
+        session,
+        listener,
+        role,
+        event,
+        source,
+        "report",
+        `${source.name}: ${String(event.payload.message ?? "statusrapport")}`,
+      ),
+    ];
+  }
+  if (event.type === "movement_waiting") {
+    const source = session.world.unitsById[String(event.payload.unitId)];
+    if (!source) return [];
+    return [
+      heardEventFromSource(session, listener, role, event, source, "movement", `${source.name} stannar upp`),
+    ];
+  }
+  if (event.type === "contact_pressure_emitted") {
+    const source = session.world.unitsById[String(event.payload.targetId)] ?? listener;
+    return [
+      heardEventFromSource(session, listener, role, event, source, "contact", "kontakttryck hörs i terrängen"),
+    ];
+  }
+  return [];
+}
+
+function heardEventFromSource(
+  session: Session,
+  listener: Unit,
+  role: "player" | "observer",
+  event: DomainEvent,
+  source: Unit,
+  kind: HeardEventProjection["kind"],
+  text: string,
+): HeardEventProjection {
+  const distance = mapDistanceInHexes(listener.position, source.position);
+  const clarity = role === "observer" || distance <= 4 ? "clear" : distance <= 9 ? "partial" : "muffled";
+  return {
+    id: event.id,
+    time: event.time,
+    kind,
+    sourceUnitId: source.id,
+    approximateDirection: directionFromMapVector(subtractMapPoint(source.position, listener.position)),
+    clarity,
+    text,
+  };
+}
+
+function reportProjection(session: Session): ReportProjection[] {
+  return session.events
+    .filter((event) => event.type === "status_report_emitted")
+    .map((event) => ({
+      id: event.id,
+      time: event.time,
+      sourceUnitId: String(event.payload.sourceUnitId),
+      kind:
+        event.payload.kind === "movement_wait" || event.payload.kind === "blocking"
+          ? (String(event.payload.kind) as ReportProjection["kind"])
+          : "status",
+      message: String(event.payload.message ?? "statusrapport"),
+      coord: clone((event.payload.coord as HexCoord | undefined) ?? { q: 0, r: 0 }),
+      confidence:
+        event.payload.confidence === "low" || event.payload.confidence === "medium" || event.payload.confidence === "high"
+          ? (String(event.payload.confidence) as ReportProjection["confidence"])
+          : "medium",
+    }))
+    .slice(-12);
+}
+
+function latestReportForUnit(session: Session, unitId: string): ReportProjection | undefined {
+  return [...reportProjection(session)].reverse().find((report) => report.sourceUnitId === unitId);
 }
 
 function collectOpposingUnitEvents(

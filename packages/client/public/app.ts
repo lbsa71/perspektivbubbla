@@ -57,8 +57,12 @@ type EventProjection = {
     communication?: CommunicationMethod;
     status?: string;
     reason?: string;
+    severity?: "low" | "medium" | "high";
     message?: string;
     neighbourId?: string;
+    blockingUnitId?: string;
+    sourceUnitId?: string;
+    element?: "command" | "tat_1" | "tat_2";
     leadHexes?: number;
     relayedBy?: string;
     hops?: number;
@@ -77,6 +81,69 @@ type EventProjection = {
       communication?: CommunicationMethod;
     };
   };
+};
+
+type EffectZoneProjection = {
+  unitId: string;
+  facing: Direction;
+  lookDirection: Direction;
+  hexes: HexCoord[];
+  blockedByUnitId?: string;
+  blockedAt?: HexCoord;
+  severity?: "low" | "medium" | "high";
+};
+
+type FriendlyBlockingProjection = {
+  unitId: string;
+  blockingUnitId: string;
+  coord: HexCoord;
+  distanceHexes: number;
+  severity: "low" | "medium" | "high";
+  reason: "friendly_in_effect_zone";
+};
+
+type CoverageCheckProjection = {
+  element: "command" | "tat_1" | "tat_2";
+  covered: boolean;
+  coveringUnitIds: string[];
+  expectedDirection: Direction;
+  reason?: "no_members" | "poor_orientation" | "blocked_effect_zone";
+};
+
+type PerceivedUnitProjection = {
+  unitId: string;
+  name: string;
+  side: "friendly" | "opposing";
+  role: "leader" | "deputy_leader" | "soldier" | "observer";
+  element?: "command" | "tat_1" | "tat_2";
+  elementPosition?: number;
+  perceivedCoord?: HexCoord;
+  visible: boolean;
+  lastSeenAt?: number;
+  age?: number;
+  confidence: "high" | "medium" | "low" | "unknown";
+  perceivedStatus: "ok" | "possibly_injured" | "injured" | "unknown";
+  source: "visual" | "memory" | "report" | "roster";
+};
+
+type HeardEventProjection = {
+  id: string;
+  time: number;
+  kind: "order" | "movement" | "contact" | "report";
+  sourceUnitId?: string;
+  approximateDirection: Direction;
+  clarity: "clear" | "partial" | "muffled";
+  text: string;
+};
+
+type ReportProjection = {
+  id: string;
+  time: number;
+  sourceUnitId: string;
+  kind: "status" | "movement_wait" | "blocking";
+  message: string;
+  coord: HexCoord;
+  confidence: "high" | "medium" | "low";
 };
 
 type Projection = {
@@ -105,6 +172,17 @@ type Projection = {
   player: UnitProjection;
   units: UnitProjection[];
   events: EventProjection[];
+  risk: {
+    effectZones: EffectZoneProjection[];
+    blocking: FriendlyBlockingProjection[];
+    coverage: CoverageCheckProjection[];
+  };
+  perception: {
+    informationMode: "training" | "normal" | "realistic";
+    lastKnownUnits: PerceivedUnitProjection[];
+    heardEvents: HeardEventProjection[];
+    reports: ReportProjection[];
+  };
 };
 
 type ClientState = {
@@ -618,6 +696,8 @@ function renderMap(projection: Projection): void {
       ? `<circle class="order-range ${state.selectedCommunication}" cx="${playerPoint.x}" cy="${playerPoint.y}" r="${orderRangePixels(size)}"></circle>`
       : "";
   const directionCueMarkup = renderDirectionCue(projection, size);
+  const effectZoneMarkup = renderEffectZones(projection, size);
+  const blockingMarkup = renderBlockingWarnings(projection, size);
 
   const intentMarkup = units
     .filter((unit) => unit.side === "friendly" && unit.intent.type === "moving" && unit.intent.target)
@@ -634,10 +714,11 @@ function renderMap(projection: Projection): void {
   const unitMarkup = units
     .map((unit) => {
       const point = unitToPixel(unit, size);
-      const vector = directionVectors[unit.lookDirection] ?? { q: 1, r: 0 };
-      const end = { x: point.x + vector.q * size * 1.6, y: point.y + vector.r * size * 1.6 };
+      const vector = directionToPixelVector(unit.lookDirection, size * 1.7);
+      const end = { x: point.x + vector.x, y: point.y + vector.y };
       const details = unitDetails(unit, projection);
-      return `<g class="unit-marker">
+      const blocked = projection.risk.blocking.some((warning) => warning.unitId === unit.id || warning.blockingUnitId === unit.id);
+      return `<g class="unit-marker ${blocked ? "unit-risk" : ""}">
         <title>${escapeHtml(details)}</title>
         <circle class="unit-${unit.side} unit-${unit.role}" cx="${point.x}" cy="${point.y}" r="${size * 0.55}"></circle>
         <line class="facing" x1="${point.x}" y1="${point.y}" x2="${end.x}" y2="${end.y}"></line>
@@ -647,7 +728,7 @@ function renderMap(projection: Projection): void {
     .join("");
 
   svg.setAttribute("viewBox", `${state.pan.x} ${state.pan.y} ${svg.clientWidth || 800} ${svg.clientHeight || 600}`);
-  svg.innerHTML = `<g>${tileMarkup}${orderRangeMarkup}${objectiveMarkup}${directionCueMarkup}${intentMarkup}${unitMarkup}</g>`;
+  svg.innerHTML = `<g>${tileMarkup}${effectZoneMarkup}${orderRangeMarkup}${objectiveMarkup}${directionCueMarkup}${blockingMarkup}${intentMarkup}${unitMarkup}</g>`;
 
   svg.querySelectorAll(".hex, .objective-hitbox").forEach((hex) => {
     hex.addEventListener("pointerenter", (event) => {
@@ -662,6 +743,43 @@ function renderMap(projection: Projection): void {
     });
     hex.addEventListener("pointerleave", hideHexTooltip);
   });
+}
+
+function renderEffectZones(projection: Projection, size: number): string {
+  if (projection.perception.informationMode === "realistic") return "";
+  const visibleKeys = new Set(
+    projection.map.tiles
+      .filter((tile) => tile.visibility !== "unknown")
+      .map((tile) => coordKey(tile.coord)),
+  );
+  return projection.risk.effectZones
+    .flatMap((zone) =>
+      zone.hexes
+        .filter((coord) => visibleKeys.has(coordKey(coord)))
+        .map((coord) => {
+          const point = axialToPixel(coord, size);
+          const blocked = zone.blockedAt && sameCoord(zone.blockedAt, coord);
+          const severity = blocked ? ` severity-${zone.severity ?? "low"}` : "";
+          return `<polygon class="effect-zone${blocked ? " is-blocked" : ""}${severity}" points="${hexPoints(point, size)}"></polygon>`;
+        }),
+    )
+    .join("");
+}
+
+function renderBlockingWarnings(projection: Projection, size: number): string {
+  return projection.risk.blocking
+    .map((warning) => {
+      const fromUnit = projection.units.find((unit) => unit.id === warning.unitId);
+      const blockingUnit = projection.units.find((unit) => unit.id === warning.blockingUnitId);
+      if (!fromUnit || !blockingUnit) return "";
+      const from = unitToPixel(fromUnit, size);
+      const to = unitToPixel(blockingUnit, size);
+      return `<g class="blocking-warning severity-${warning.severity}">
+        <line x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}"></line>
+        <circle cx="${to.x}" cy="${to.y}" r="${size * 0.75}"></circle>
+      </g>`;
+    })
+    .join("");
 }
 
 function setDirectionCue(target: HexCoord, projection: Projection): { ok: boolean; reason: string; direction: Direction; cue: HexCoord } {
@@ -766,6 +884,18 @@ function hexTooltipMarkup(projection: Projection, coord: HexCoord): string {
         : "okänd";
   const unitLine = occupants.length > 0 ? occupants.map((unit) => `${unit.name} (${displayRole(unit)})`).join(", ") : "inga";
   const markerLine = sameCoord(coord, projection.objective.target) ? `mål: ${objectiveTitle(projection.objective.title)}` : undefined;
+  const effectUnits = projection.risk.effectZones.filter((zone) => zone.hexes.some((hex) => sameCoord(hex, coord)));
+  const blockingHere = projection.risk.blocking.filter((warning) => sameCoord(warning.coord, coord));
+  const effectLine =
+    effectUnits.length > 0
+      ? effectUnits.map((zone) => `${displayUnitId(zone.unitId)} ${zone.lookDirection}`).join(", ")
+      : "ingen";
+  const blockingLine =
+    blockingHere.length > 0
+      ? blockingHere
+          .map((warning) => `${displayUnitId(warning.blockingUnitId)} blockerar ${displayUnitId(warning.unitId)} (${displaySeverity(warning.severity)})`)
+          .join(", ")
+      : "nej";
 
   return `
     <div class="hex-tooltip-title">${escapeHtml(displayTerrain(terrain))} <span>${coord.q},${coord.r}</span></div>
@@ -775,6 +905,8 @@ function hexTooltipMarkup(projection: Projection, coord: HexCoord): string {
       <dt>skydd</dt><dd>${known ? formatMaybeNumber(tile?.cover) : "-"}</dd>
       <dt>skyl</dt><dd>${known ? formatMaybeNumber(tile?.concealment) : "-"}</dd>
       <dt>risk</dt><dd>${known ? formatMaybeNumber(tile?.exposure) : "-"}</dd>
+      <dt>effektzon</dt><dd>${escapeHtml(effectLine)}</dd>
+      <dt>blockering</dt><dd>${escapeHtml(blockingLine)}</dd>
       <dt>siktlinje</dt><dd>${known ? (tile?.blocksSight ? "blockerad" : "öppen") : "-"}</dd>
       <dt>enheter</dt><dd>${escapeHtml(unitLine)}</dd>
       ${markerLine ? `<dt>markering</dt><dd>${escapeHtml(markerLine)}</dd>` : ""}
@@ -848,8 +980,23 @@ function groupDetails(projection: Projection): string {
         unit.intent.type === "moving" && unit.intent.target
           ? ` -> ${unit.intent.target.q},${unit.intent.target.r}`
           : "";
-      return `${unit.name}: ${displayRole(unit)} ${displayElementPosition(unit)} ${displayIntent(unit.intent.type)}${target}`;
+      const perceived = perceivedUnitFor(projection, unit.id);
+      const confidence = perceived ? ` ${displayConfidence(perceived.confidence)}` : "";
+      return `${unit.name}: ${displayRole(unit)} ${displayElementPosition(unit)} ${displayIntent(unit.intent.type)}${target}${confidence}`;
     })
+    .join("\n");
+  const blocking = projection.risk.blocking.length
+    ? projection.risk.blocking
+        .slice(0, 4)
+        .map((warning) => `${displayUnitId(warning.blockingUnitId)} blockerar ${displayUnitId(warning.unitId)} (${displaySeverity(warning.severity)})`)
+        .join("\n")
+    : "inga blockerade effektzoner";
+  const coverage = projection.risk.coverage
+    .map((check) =>
+      check.covered
+        ? `${displayElementName(check.element)} täcker ${check.expectedDirection}`
+        : `${displayElementName(check.element)} saknar täckning ${check.expectedDirection}: ${displayReason(check.reason)}`,
+    )
     .join("\n");
 
   return [
@@ -857,6 +1004,8 @@ function groupDetails(projection: Projection): string {
     `metod: ${displayCommunication(state.selectedCommunication)}`,
     `riktning: ${directionCue}`,
     `soldater: ${friendlies.length}`,
+    `effektzoner:\n${blocking}`,
+    `tät-täckning:\n${coverage}`,
     rows,
   ].join("\n");
 }
@@ -885,6 +1034,9 @@ function orderDetails(projection: Projection): string {
         event.type === "order_delivery_resolved" ||
         event.type === "group_halted" ||
         event.type === "movement_waiting" ||
+        event.type === "friendly_effect_blocked" ||
+        event.type === "tat_coverage_gap" ||
+        event.type === "status_report_emitted" ||
         event.type === "command_accepted" ||
         event.type === "command_rejected",
     )
@@ -893,7 +1045,12 @@ function orderDetails(projection: Projection): string {
     .map(formatOrderEvent)
     .join("\n");
 
-  return [current, recent].filter(Boolean).join("\n");
+  const heard = projection.perception.heardEvents
+    .slice(-4)
+    .reverse()
+    .map((event) => `${event.time.toFixed(1)} hör ${event.approximateDirection} ${displayClarity(event.clarity)}: ${event.text}`)
+    .join("\n");
+  return [current, recent, heard ? `hörsel/rapporter:\n${heard}` : ""].filter(Boolean).join("\n");
 }
 
 function formatOrderEvent(event: EventProjection): string {
@@ -920,6 +1077,15 @@ function formatOrderEvent(event: EventProjection): string {
   if (event.type === "movement_waiting") {
     return `${event.time.toFixed(1)} ${displayUnitId(event.payload?.unitId)} väntar ${displayReason(event.payload?.reason)}`;
   }
+  if (event.type === "friendly_effect_blocked") {
+    return `${event.time.toFixed(1)} ${displayUnitId(event.payload?.blockingUnitId)} blockerar ${displayUnitId(event.payload?.unitId)} ${displaySeverity(event.payload?.severity)}`;
+  }
+  if (event.type === "tat_coverage_gap") {
+    return `${event.time.toFixed(1)} ${displayElementName(event.payload?.element)} saknar täckning ${displayReason(event.payload?.reason)}`;
+  }
+  if (event.type === "status_report_emitted") {
+    return `${event.time.toFixed(1)} ${displayUnitId(event.payload?.sourceUnitId)} rapporterar: ${event.payload?.message ?? ""}`;
+  }
   const command = event.payload?.command;
   const detail = command?.target
     ? ` ${command.target.q},${command.target.r}`
@@ -943,15 +1109,33 @@ function unitDetails(unit: UnitProjection, projection: Projection): string {
     ? `${state.selectedDirection}${state.directionCue ? ` via ${state.directionCue.q},${state.directionCue.r}` : ""}`
     : projection.activeFormation?.direction ?? projection.player.facing;
   const order = unit.currentOrderId ? shortOrderId(unit.currentOrderId) : "-";
+  const perceived = perceivedUnitFor(projection, unit.id);
+  const blocking = projection.risk.blocking.filter((warning) => warning.unitId === unit.id || warning.blockingUnitId === unit.id);
+  const effectStatus =
+    blocking.length > 0
+      ? blocking
+          .map((warning) =>
+            warning.unitId === unit.id
+              ? `egen effektzon blockerad av ${displayUnitId(warning.blockingUnitId)} (${displaySeverity(warning.severity)})`
+              : `blockerar ${displayUnitId(warning.unitId)} (${displaySeverity(warning.severity)})`,
+          )
+          .join("; ")
+      : "fri";
 
   return [
     `${unit.name} (${displayRole(unit)})`,
     `del: ${displayElementPosition(unit)}`,
     `hex: ${unit.coord.q},${unit.coord.r}`,
+    perceived
+      ? `lägesbild: ${displayConfidence(perceived.confidence)} via ${displayPerceptionSource(perceived.source)}${typeof perceived.age === "number" ? `, ${perceived.age}s gammal` : ""}`
+      : "lägesbild: okänd",
+    perceived?.perceivedCoord ? `uppfattad hex: ${perceived.perceivedCoord.q},${perceived.perceivedCoord.r}` : "uppfattad hex: okänd",
+    `uppfattad status: ${displayPerceivedStatus(perceived?.perceivedStatus)}`,
     `avsikt: ${displayIntent(unit.intent.type)}`,
     `mål: ${target}`,
     `ställning: ${displayPosture(unit.posture)}`,
     `riktning/blick: ${unit.facing}/${unit.lookDirection}`,
+    `effektzon: ${effectStatus}`,
     `order: ${order}`,
     `gruppering: ${activeFormation}`,
     `metod: ${displayCommunication(state.selectedCommunication)}`,
@@ -1031,8 +1215,60 @@ function displayReason(reason: string | undefined): string {
     cohesion_wait: "väntar på sammanhållning",
     neighbour_too_far: "granne för långt bort",
     no_path: "ingen framkomlig väg",
+    poor_orientation: "fel blickriktning",
+    blocked_effect_zone: "effektzon blockerad",
+    no_members: "saknar soldater",
+    friendly_in_effect_zone: "kamrat i effektzon",
   };
   return labels[reason] ?? reason.replaceAll("_", " ");
+}
+
+function displaySeverity(severity: string | undefined): string {
+  const labels: Record<string, string> = {
+    high: "hög",
+    medium: "medel",
+    low: "låg",
+  };
+  return severity ? (labels[severity] ?? severity) : "-";
+}
+
+function displayConfidence(confidence: string | undefined): string {
+  const labels: Record<string, string> = {
+    high: "säker",
+    medium: "trolig",
+    low: "osäker",
+    unknown: "okänd",
+  };
+  return confidence ? (labels[confidence] ?? confidence) : "okänd";
+}
+
+function displayClarity(clarity: string | undefined): string {
+  const labels: Record<string, string> = {
+    clear: "tydligt",
+    partial: "delvis",
+    muffled: "dämpat",
+  };
+  return clarity ? (labels[clarity] ?? clarity) : "";
+}
+
+function displayPerceptionSource(source: string | undefined): string {
+  const labels: Record<string, string> = {
+    visual: "syn",
+    memory: "minne",
+    report: "rapport",
+    roster: "namnlista",
+  };
+  return source ? (labels[source] ?? source) : "okänd";
+}
+
+function displayPerceivedStatus(status: string | undefined): string {
+  const labels: Record<string, string> = {
+    ok: "ok",
+    possibly_injured: "möjligen skadad",
+    injured: "skadad",
+    unknown: "okänd",
+  };
+  return status ? (labels[status] ?? status) : "okänd";
 }
 
 function displayIntent(intent: string): string {
@@ -1110,6 +1346,15 @@ function formatTimelineEvent(event: EventProjection): string {
   }
   if (event.type === "formation_movement_diagnostic") {
     return `diagnos: ${displayReason(event.payload?.reason)}`;
+  }
+  if (event.type === "friendly_effect_blocked") {
+    return `${displayUnitId(event.payload?.blockingUnitId)} blockerar ${displayUnitId(event.payload?.unitId)} (${displaySeverity(event.payload?.severity)})`;
+  }
+  if (event.type === "tat_coverage_gap") {
+    return `${displayElementName(event.payload?.element)} saknar täckning ${displayReason(event.payload?.reason)}`;
+  }
+  if (event.type === "status_report_emitted") {
+    return `${displayUnitId(event.payload?.sourceUnitId)} rapporterar: ${event.payload?.message ?? ""}`;
   }
   if (event.type === "command_accepted" || event.type === "command_rejected") {
     return displayCommandType(event.type);
@@ -1201,9 +1446,20 @@ function displayElement(element: UnitProjection["element"]): string {
   return "-";
 }
 
+function displayElementName(element: string | undefined): string {
+  if (element === "tat_1") return "tät 1";
+  if (element === "tat_2") return "tät 2";
+  if (element === "command") return "chefsdel";
+  return "tät";
+}
+
 function displayElementPosition(unit: UnitProjection): string {
   const element = displayElement(unit.element);
   return unit.elementPosition ? `${element} / position ${unit.elementPosition}` : element;
+}
+
+function perceivedUnitFor(projection: Projection, unitId: string): PerceivedUnitProjection | undefined {
+  return projection.perception.lastKnownUnits.find((unit) => unit.unitId === unitId);
 }
 
 function orderRangePixels(size: number): number {
@@ -1245,6 +1501,15 @@ function mapPointToPixel(point: MapPoint, size: number): { x: number; y: number 
   return {
     x: point.x * size,
     y: point.y * size,
+  };
+}
+
+function directionToPixelVector(direction: Direction, length: number): { x: number; y: number } {
+  const point = axialToMapPoint(directionVectors[direction]);
+  const pointLength = Math.hypot(point.x, point.y) || 1;
+  return {
+    x: (point.x / pointLength) * length,
+    y: (point.y / pointLength) * length,
   };
 }
 
@@ -1301,6 +1566,10 @@ function addCoord(a: HexCoord, b: HexCoord): HexCoord {
 
 function sameCoord(a: HexCoord, b: HexCoord): boolean {
   return a.q === b.q && a.r === b.r;
+}
+
+function coordKey(coord: HexCoord): string {
+  return `${coord.q},${coord.r}`;
 }
 
 function escapeHtml(value: string): string {

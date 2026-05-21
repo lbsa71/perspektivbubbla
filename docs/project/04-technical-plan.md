@@ -39,11 +39,13 @@ Important current constraints:
 - Hex coordinates are derived for pathing, occupancy, terrain lookup, visibility projection, and rendering.
 - Formation orders and forward movement are separate concepts. A formation order means "get into this formation"; `framåt` means "prepare to advance using the current or supplied formation and direction"; `halt` stops the group.
 - Communication mode is a modifier on an order, not an action by itself.
-- Voice and gesture exist in the core. Radio is still planned.
+- Voice, gesture, and radio exist in the core as order propagation modes.
 - The grpc must remain an embodied soldier. Group advance should be driven by the player's normal click-movement through terrain after `framåt`, not by a detached group autopilot.
 - No two soldiers may occupy the same hex at the same time.
 - Soldiers may route around each other while reforming, but must preserve formation-neighbour cohesion while advancing.
 - Visibility uses the soldier's true position and fades recently seen hexes before they become unknown again.
+- Risk/effect zones are core projection data. Friendly blocking, poor orientation, and tät coverage checks are logged for training/AAR use.
+- Player perception includes visible/current information, last-known friendly information with confidence and age, heard events, and short reports.
 
 ```ts
 type WorldState = {
@@ -138,6 +140,10 @@ The current foundation should record at least:
 - formation advance started
 - group halted
 - movement waiting, including cohesion or separation reason
+- friendly effect zone blocked
+- poor orientation detected
+- tät coverage gap
+- status report emitted
 
 The first event store can be in memory, but it must sit behind interfaces that make durable storage pluggable later.
 
@@ -253,7 +259,7 @@ Current order model:
 - Formation order: assigns local formation targets around the group.
 - Forward order: uses the current or supplied formation, forms up if needed, then arms group advance along a true-map bearing.
 - Halt order: stops every friendly soldier that received it.
-- Communication mode: currently voice or gesture; radio remains planned.
+- Communication mode: voice, gesture, or radio.
 
 Current formation model:
 
@@ -330,18 +336,37 @@ type FormationState = {
 
 type PerceivedUnit = {
   unitId: string;
-  perceivedCoord: HexCoord;
-  lastSeenAt: number;
-  confidence: "high" | "medium" | "low";
-  visibleStatus?: "ok" | "possibly_injured" | "injured" | "unknown";
+  perceivedCoord?: HexCoord;
+  lastSeenAt?: number;
+  age?: number;
+  confidence: "high" | "medium" | "low" | "unknown";
+  perceivedStatus: "ok" | "possibly_injured" | "injured" | "unknown";
+  source: "visual" | "memory" | "report" | "roster";
 };
 
 type HeardEvent = {
   id: string;
   time: number;
+  kind: "order" | "movement" | "contact" | "report";
   approximateDirection: Direction;
   clarity: "clear" | "partial" | "muffled";
   text?: string;
+};
+
+type EffectZone = {
+  unitId: string;
+  lookDirection: Direction;
+  hexes: HexCoord[];
+  blockedByUnitId?: string;
+  blockedAt?: HexCoord;
+  severity?: "low" | "medium" | "high";
+};
+
+type CoverageCheck = {
+  element: "tat_1" | "tat_2";
+  covered: boolean;
+  coveringUnitIds: string[];
+  expectedDirection: Direction;
 };
 
 type Order = {
@@ -403,18 +428,17 @@ The implemented foundation now includes:
 13. Formation advance with neighbour cohesion.
 14. Immediate field-of-view update with perceived information aging over time.
 15. Probabilistic detection and abstract contact-pressure events.
-16. Minimal AAR/event summary projected from the event log.
+16. Risk/effect-zone projection with friendly blocking and tät coverage checks.
+17. Perceived unit status, last-known confidence/age, heard events, and short status reports.
+18. Minimal AAR/event summary projected from the event log.
 
 ## Next Technical Slice
 
-The next slice should make group command robust enough to become the base scenario loop:
+The next slice should turn the current mechanics into scenario-grade play:
 
-1. Add radio to the core command model.
-2. Record and expose full command propagation chains.
-3. Add command delay, missed order, and stale-order diagnostics.
-4. Rework group advance so `framåt` arms formation following around the embodied grpc, while grpc terrain movement still comes from player clicks.
-5. Expand movement motivation tests for sharp turns, re-forming, terrain, grpc stops, and neighbour catch-up.
-6. Add risk/effect zones and friendly blocking.
-7. Add perceived status, shouts, and report events.
-8. Move scenarios to JSON fixtures.
-9. Upgrade AAR from event feed to actual/perceived/commanded replay.
+1. Record and expose full command propagation chains, including delayed, stale, and misunderstood orders.
+2. Expand movement motivation tests for sharp turns, re-forming, terrain, grpc stops, and neighbour catch-up.
+3. Make training/normal/realistic information modes selectable and stricter.
+4. Move scenarios to JSON fixtures.
+5. Upgrade AAR from event feed to actual/perceived/commanded replay with learning points.
+6. Add injury and simplified buddy-aid mechanics.

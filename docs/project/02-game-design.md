@@ -17,7 +17,7 @@ Trains:
 
 ### Leader Mode: Limited Situation Picture
 
-The player is a group leader and gives orders to a small group of 4-6 soldiers.
+The player is a group leader and gives orders to an 8-soldier group with grpc, stf grpc, and two tät.
 
 Trains:
 
@@ -311,7 +311,7 @@ If a friendly soldier is in the risk zone:
 - the soldier receives internal `blocked` status
 - AAR marks the event
 
-Training mode can show clear red/orange cones and warnings. Normal mode should be subtle. Realistic mode should avoid explicit warnings and rely on behavior/AAR.
+The current prototype implements this as core projection data: each friendly projects an effect zone, blocker pairs are detected, and the two tät receive simple coverage checks. Training mode shows clear zone overlays and blocker markings. Normal mode should be subtle. Realistic mode should avoid explicit warnings and rely on behavior/AAR.
 
 ## Communication
 
@@ -342,6 +342,8 @@ Voice orders depend on hearing distance, terrain, noise level, stress, direction
 Radio can be simplified in v0.1 as working, degraded, unavailable, or occupied. It is a mechanism for information transfer, not a full communications training system.
 
 Shouts are information events. Example: "Andersson injured, applying emergency aid." Exact words are perceived only with good audibility. Others hear fragments or only an approximate sound direction. The leader does not automatically get full status unless they hear or receive a report.
+
+The current prototype has a first slice of this information system: short status reports are emitted for blocked effect zones and movement waits, and the player projection exposes heard events with approximate direction and clarity. Injury-specific reports are still planned for the buddy-aid slice.
 
 ## Injury and TOS Abstraction
 

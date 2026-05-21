@@ -374,6 +374,55 @@ test("radio formation orders reach the full group as a communication mode", () =
   );
 });
 
+test("risk zones flag friendly blocking and tät coverage", () => {
+  let session = createPhaseOneSession({ seed: "risk-zones", scenario: "group_commander" });
+
+  session = advanceSession(session, 1, { random: () => 1 });
+
+  const projection = projectSession(session);
+  const leaderZone = projection.risk.effectZones.find((zone) => zone.unitId === "LEADER_1");
+  assert.ok(leaderZone);
+  assert.ok(leaderZone.hexes.length > 0);
+  assert.ok(
+    projection.risk.blocking.some(
+      (warning) =>
+        warning.unitId === "LEADER_1" &&
+        warning.blockingUnitId === "DEPUTY_1" &&
+        warning.severity === "high",
+    ),
+  );
+  assert.ok(projection.risk.coverage.some((check) => check.element === "tat_1" && check.reason === "blocked_effect_zone"));
+  assert.ok(projection.risk.coverage.some((check) => check.element === "tat_2" && check.covered));
+  assert.ok(session.events.some((event) => event.type === "friendly_effect_blocked"));
+  assert.ok(projection.aar.blockingEvents.some((event) => event.type === "friendly_effect_blocked"));
+});
+
+test("perception projection separates last-known status, reports, and heard events", () => {
+  let session = createPhaseOneSession({ seed: "perception-bubble", scenario: "group_commander" });
+  const leader = session.world.units.find((unit) => unit.role === "leader");
+  assert.ok(leader);
+
+  session = dispatchCommand(session, {
+    type: "look_direction",
+    unitId: leader.id,
+    direction: "NW",
+    issuedAt: session.world.time,
+  });
+  session = advanceSession(session, 5, { random: () => 1 });
+
+  const projection = projectSession(session);
+  const perceivedLeader = projection.perception.lastKnownUnits.find((unit) => unit.unitId === "LEADER_1");
+  const perceivedFlank = projection.perception.lastKnownUnits.find((unit) => unit.unitId === "FRIENDLY_4");
+
+  assert.equal(projection.perception.informationMode, "training");
+  assert.equal(perceivedLeader?.confidence, "high");
+  assert.ok(perceivedFlank);
+  assert.notEqual(perceivedFlank?.source, "visual");
+  assert.ok(projection.perception.reports.some((report) => report.kind === "blocking"));
+  assert.ok(projection.perception.heardEvents.some((event) => event.kind === "report"));
+  assert.ok(projection.aar.reportEvents.some((event) => event.type === "status_report_emitted"));
+});
+
 test("forward movement waits when a neighbour falls too far behind", () => {
   let session = createPhaseOneSession({ seed: "neighbour-cohesion", scenario: "group_commander" });
   const leader = session.world.units.find((unit) => unit.role === "leader");
