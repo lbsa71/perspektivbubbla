@@ -11,7 +11,7 @@
 - Client state limited to view/input state.
 - In-memory session/event state initially, with the code shaped so durable storage can replace it later.
 - Event-sourced session log from the first implementation slice.
-- JSON-based scenarios remain planned, but are not yet the current scenario source.
+- Scenario metadata lives in the core for now and is exposed through HTTP; JSON-based scenario fixtures remain planned.
 
 ## Core Architecture Principle
 
@@ -31,7 +31,7 @@ The client must not directly mutate game state or duplicate game rules.
 
 ## Current Implementation Notes
 
-The prototype has moved beyond the original one-soldier slice. The current core supports both a one-soldier scenario and a group commander scenario. The group commander scenario contains 8 friendly soldiers: grpc, stf grpc, and two tät.
+The prototype has moved beyond the original one-soldier slice. The current core supports a one-soldier cover scenario, a two-soldier risk-zone scenario, and a group commander scenario. The group commander scenario contains 8 friendly soldiers: grpc, stf grpc, and two tät.
 
 Important current constraints:
 
@@ -46,6 +46,7 @@ Important current constraints:
 - Visibility uses the soldier's true position and fades recently seen hexes before they become unknown again.
 - Risk/effect zones are core projection data. Friendly blocking, poor orientation, and tät coverage checks are logged for training/AAR use.
 - Player perception includes visible/current information, last-known friendly information with confidence and age, heard events, and short reports.
+- Scenario selection is backend-authoritative: the client fetches scenario metadata, posts the selected scenario/difficulty, and receives a new projection over HTTP and WebSocket.
 
 ```ts
 type WorldState = {
@@ -418,19 +419,21 @@ The implemented foundation now includes:
 3. Event-sourced session log with deterministic projections.
 4. One-soldier scenario with position, true position, facing, look direction, posture, and movement.
 5. Group commander scenario with 8 friendly soldiers, grpc/stf grpc, and two tät.
-6. 100x100 map with viewport pan/zoom at 3 meters per hex.
-7. Hybrid map generation with static markers and deterministic generated terrain.
-8. Explicit opposing observer units with simple heuristics.
-9. Click-issued movement commands to any target hex, with backend-owned nearest pathing.
-10. Formation orders, forward orders, halt, regroup, and basic voice/gesture propagation.
-11. True-bearing direction targeting before snapping to hex pathing.
-12. Collision-aware reformation with no shared friendly hexes.
-13. Formation advance with neighbour cohesion.
-14. Immediate field-of-view update with perceived information aging over time.
-15. Probabilistic detection and abstract contact-pressure events.
-16. Risk/effect-zone projection with friendly blocking and tät coverage checks.
-17. Perceived unit status, last-known confidence/age, heard events, and short status reports.
-18. Minimal AAR/event summary projected from the event log.
+6. Two-soldier risk-zone scenario.
+7. Scenario chooser API and client overlay with troop, goal, and difficulty preview.
+8. 100x100 map with viewport pan/zoom at 3 meters per hex.
+9. Hybrid map generation with static markers and deterministic generated terrain.
+10. Explicit opposing observer units with simple heuristics.
+11. Click-issued movement commands to any target hex, with backend-owned nearest pathing.
+12. Formation orders, forward orders, halt, regroup, and basic voice/gesture propagation.
+13. True-bearing direction targeting before snapping to hex pathing.
+14. Collision-aware reformation with no shared friendly hexes.
+15. Formation advance with neighbour cohesion.
+16. Immediate field-of-view update with perceived information aging over time.
+17. Probabilistic detection and abstract contact-pressure events.
+18. Risk/effect-zone projection with friendly blocking and tät coverage checks.
+19. Perceived unit status, last-known confidence/age, heard events, and short status reports.
+20. Minimal AAR/event summary projected from the event log.
 
 ## Next Technical Slice
 
@@ -438,7 +441,7 @@ The next slice should turn the current mechanics into scenario-grade play:
 
 1. Record and expose full command propagation chains, including delayed, stale, and misunderstood orders.
 2. Expand movement motivation tests for sharp turns, re-forming, terrain, grpc stops, and neighbour catch-up.
-3. Make training/normal/realistic information modes selectable and stricter.
+3. Make normal/realistic information modes stricter.
 4. Move scenarios to JSON fixtures.
 5. Upgrade AAR from event feed to actual/perceived/commanded replay with learning points.
 6. Add injury and simplified buddy-aid mechanics.

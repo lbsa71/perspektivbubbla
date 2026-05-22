@@ -72,6 +72,44 @@ test("websocket session accepts group formation orders", async (t) => {
   assert.ok(second.projection.units.filter((unit: { intent: { type: string } }) => unit.intent.type === "moving").length >= 5);
 });
 
+test("http api lists scenarios and starts selected difficulty", async (t) => {
+  const app = createAppServer();
+  await app.listen(0);
+  t.after(() => app.close());
+
+  const { port } = app.address();
+  const scenariosResponse = await fetch(`http://127.0.0.1:${port}/api/scenarios`);
+  assert.equal(scenariosResponse.status, 200);
+  const scenarios = (await scenariosResponse.json()) as {
+    scenarios: Array<{ id: string; troop: unknown[]; goal: { target: { q: number; r: number } } }>;
+    difficulties: Array<{ id: string }>;
+  };
+  assert.ok(scenarios.scenarios.some((scenario) => scenario.id === "leader_lost_picture" && scenario.troop.length === 8));
+  assert.ok(scenarios.difficulties.some((difficulty) => difficulty.id === "realistic"));
+
+  const sessionResponse = await fetch(`http://127.0.0.1:${port}/api/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scenarioId: "risk_zone_blocking", difficulty: "realistic" }),
+  });
+  assert.equal(sessionResponse.status, 200);
+  const projection = await sessionResponse.json() as {
+    scenario: { id: string; difficulty: string; troop: unknown[] };
+    objective: { target: { q: number; r: number } };
+    player: { role: string };
+    units: unknown[];
+    perception: { informationMode: string };
+  };
+
+  assert.equal(projection.scenario.id, "risk_zone_blocking");
+  assert.equal(projection.scenario.difficulty, "realistic");
+  assert.equal(projection.perception.informationMode, "realistic");
+  assert.equal(projection.player.role, "leader");
+  assert.equal(projection.scenario.troop.length, 2);
+  assert.equal(projection.units.length, 2);
+  assert.deepEqual(projection.objective.target, { q: 24, r: 50 });
+});
+
 type SocketMessage = {
   type: string;
   projection: {

@@ -1,6 +1,8 @@
 type Direction = "N" | "NE" | "SE" | "S" | "SW" | "NW";
 type Formation = "column" | "line" | "file" | "wedge" | "dispersed" | "regroup";
 type CommunicationMethod = "voice" | "gesture" | "radio";
+type DifficultyLevel = "training" | "normal" | "realistic";
+type ScenarioId = "cover_to_cover" | "risk_zone_blocking" | "leader_lost_picture";
 
 type HexCoord = {
   q: number;
@@ -44,6 +46,8 @@ type UnitProjection = {
 };
 
 type EventProjection = {
+  id?: string;
+  sequence?: number;
   time: number;
   type: string;
   payload?: {
@@ -146,7 +150,50 @@ type ReportProjection = {
   confidence: "high" | "medium" | "low";
 };
 
+type ScenarioTroopPreview = {
+  id: string;
+  name: string;
+  role: "leader" | "deputy_leader" | "soldier" | "observer";
+  element?: "command" | "tat_1" | "tat_2";
+  elementPosition?: number;
+};
+
+type ScenarioOption = {
+  id: ScenarioId;
+  title: string;
+  subtitle: string;
+  description: string;
+  troop: ScenarioTroopPreview[];
+  goal: {
+    title: string;
+    description: string;
+    target: HexCoord;
+  };
+  defaultDifficulty: DifficultyLevel;
+  recommendedFormation?: Formation;
+};
+
+type DifficultyOption = {
+  id: DifficultyLevel;
+  label: string;
+  description: string;
+};
+
 type Projection = {
+  scenario: {
+    id: ScenarioId;
+    title: string;
+    subtitle: string;
+    description: string;
+    difficulty: DifficultyLevel;
+    troop: ScenarioTroopPreview[];
+    goal: {
+      title: string;
+      description: string;
+      target: HexCoord;
+    };
+    recommendedFormation?: Formation;
+  };
   time: number;
   activeFormation?: {
     orderId: string;
@@ -183,10 +230,22 @@ type Projection = {
     heardEvents: HeardEventProjection[];
     reports: ReportProjection[];
   };
+  aar?: {
+    orderEvents?: EventProjection[];
+  };
 };
 
 type ClientState = {
   projection?: Projection;
+  scenarios: ScenarioOption[];
+  difficulties: DifficultyOption[];
+  selectedScenarioId?: ScenarioId;
+  selectedDifficulty: DifficultyLevel;
+  showScenarioChooser: boolean;
+  showIntro: boolean;
+  showHelp: boolean;
+  orientationMode: boolean;
+  startingScenario: boolean;
   socket?: WebSocket;
   zoom: number;
   pan: { x: number; y: number };
@@ -198,6 +257,22 @@ type ClientState = {
   directionCuePoint?: MapPoint;
   showAarFeed: boolean;
   loggedDiagnostics: Set<string>;
+  eventHistory: EventProjection[];
+};
+
+type CoachStep = {
+  step: string;
+  title: string;
+  body: string;
+  action: string;
+  tone: "ready" | "wait" | "warning";
+};
+
+type DebriefSummary = {
+  score: number;
+  grade: string;
+  metrics: Array<{ label: string; value: string; state: "good" | "warn" | "bad" }>;
+  lessons: string[];
 };
 
 type PanDragState = {
@@ -235,8 +310,19 @@ const directionVectors: Record<Direction, HexCoord> = {
   NW: { q: -1, r: 0 },
 };
 
+const initialIntroVisible = shouldShowIntro();
+
 const state: ClientState = {
   projection: undefined,
+  scenarios: [],
+  difficulties: [],
+  selectedScenarioId: undefined,
+  selectedDifficulty: "training",
+  showScenarioChooser: !initialIntroVisible,
+  showIntro: initialIntroVisible,
+  showHelp: false,
+  orientationMode: true,
+  startingScenario: false,
   socket: undefined,
   zoom: 1,
   pan: { x: 0, y: 0 },
@@ -248,13 +334,36 @@ const state: ClientState = {
   directionCuePoint: undefined,
   showAarFeed: false,
   loggedDiagnostics: new Set(),
+  eventHistory: [],
 };
 let panDrag: PanDragState | undefined;
 let mapRenderFrame: number | undefined;
 
+void loadScenarios();
 connect();
 bindControls();
 renderAarFeedVisibility();
+renderProductModals();
+renderScenarioChooser();
+
+function shouldShowIntro(): boolean {
+  const introParam = new URLSearchParams(location.search).get("intro");
+  if (introParam === "1") return true;
+  if (introParam === "0") return false;
+  try {
+    return localStorage.getItem("perspektivbubbla:intro-seen") !== "true";
+  } catch {
+    return true;
+  }
+}
+
+function rememberIntroSeen(): void {
+  try {
+    localStorage.setItem("perspektivbubbla:intro-seen", "true");
+  } catch {
+    // localStorage can be unavailable in hardened browser contexts.
+  }
+}
 
 function connect() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
@@ -271,11 +380,49 @@ function connect() {
     const message = JSON.parse(event.data);
     if (message.type === "projection") {
       state.projection = message.projection;
+      mergeEventHistory(message.projection.events);
+      if (!state.showScenarioChooser && !state.startingScenario) {
+        state.selectedScenarioId = message.projection.scenario?.id ?? state.selectedScenarioId;
+        state.selectedDifficulty = message.projection.scenario?.difficulty ?? state.selectedDifficulty;
+      } else {
+        state.selectedScenarioId = state.selectedScenarioId ?? message.projection.scenario?.id;
+        state.selectedDifficulty = state.selectedDifficulty ?? message.projection.scenario?.difficulty ?? "training";
+      }
       logFormationDiagnostics(message.projection);
       centerOnPlayerOnce();
       render();
     }
   });
+}
+
+function mergeEventHistory(events: EventProjection[]): void {
+  const byKey = new Map(state.eventHistory.map((event) => [eventHistoryKey(event), event]));
+  for (const event of events) {
+    byKey.set(eventHistoryKey(event), event);
+  }
+  state.eventHistory = [...byKey.values()]
+    .sort((a, b) => (a.sequence ?? a.time) - (b.sequence ?? b.time) || a.time - b.time)
+    .slice(-500);
+}
+
+function eventHistoryKey(event: EventProjection): string {
+  return event.id ?? `${event.sequence ?? "?"}:${event.time}:${event.type}:${JSON.stringify(event.payload ?? {})}`;
+}
+
+async function loadScenarios(): Promise<void> {
+  try {
+    const response = await fetch("/api/scenarios");
+    const payload = (await response.json()) as { scenarios: ScenarioOption[]; difficulties: DifficultyOption[] };
+    state.scenarios = payload.scenarios;
+    state.difficulties = payload.difficulties;
+    const currentScenarioId = state.projection?.scenario.id;
+    const selected = state.scenarios.find((scenario) => scenario.id === currentScenarioId) ?? state.scenarios[0];
+    state.selectedScenarioId = selected?.id;
+    state.selectedDifficulty = state.projection?.scenario.difficulty ?? selected?.defaultDifficulty ?? "training";
+    renderScenarioChooser();
+  } catch (error) {
+    console.warn("[scenario] failed to load scenario list", error);
+  }
 }
 
 function logFormationDiagnostics(projection: Projection): void {
@@ -349,10 +496,80 @@ function bindControls() {
     if (!(target instanceof HTMLElement)) return;
     const commandTarget = target.closest("[data-command]");
     if (!(commandTarget instanceof HTMLElement)) return;
+    if (commandTarget.dataset.command === "open-intro") {
+      state.showIntro = true;
+      renderProductModals();
+      return;
+    }
+    if (commandTarget.dataset.command === "close-intro") {
+      state.showIntro = false;
+      rememberIntroSeen();
+      renderProductModals();
+      return;
+    }
+    if (commandTarget.dataset.command === "start-from-intro") {
+      state.showIntro = false;
+      state.showScenarioChooser = true;
+      rememberIntroSeen();
+      renderProductModals();
+      renderScenarioChooser();
+      return;
+    }
+    if (commandTarget.dataset.command === "toggle-help") {
+      state.showHelp = !state.showHelp;
+      if (state.showHelp && state.showIntro) {
+        state.showIntro = false;
+        rememberIntroSeen();
+      }
+      renderProductModals();
+      return;
+    }
+    if (commandTarget.dataset.command === "close-help") {
+      state.showHelp = false;
+      renderProductModals();
+      return;
+    }
+    if (commandTarget.dataset.command === "toggle-orientation") {
+      state.orientationMode = !state.orientationMode;
+      renderOrientationMode();
+      renderCoachPanel();
+      renderProductModals();
+      return;
+    }
     if (commandTarget.dataset.command === "toggle-aar") {
       state.showAarFeed = !state.showAarFeed;
       renderAarFeedVisibility();
       renderMapIfReady();
+      return;
+    }
+    if (commandTarget.dataset.command === "open-scenario") {
+      state.showScenarioChooser = true;
+      renderScenarioChooser();
+      return;
+    }
+    if (commandTarget.dataset.command === "close-scenario") {
+      state.showScenarioChooser = false;
+      renderScenarioChooser();
+      return;
+    }
+    if (commandTarget.dataset.command === "select-scenario" && isScenarioId(commandTarget.dataset.scenarioId)) {
+      const scenario = state.scenarios.find((candidate) => candidate.id === commandTarget.dataset.scenarioId);
+      state.selectedScenarioId = commandTarget.dataset.scenarioId;
+      state.selectedDifficulty = scenario?.defaultDifficulty ?? state.selectedDifficulty;
+      if (scenario?.recommendedFormation) {
+        state.selectedFormation = scenario.recommendedFormation;
+      }
+      renderScenarioChooser();
+      renderControls();
+      return;
+    }
+    if (commandTarget.dataset.command === "select-difficulty" && isDifficulty(commandTarget.dataset.difficulty)) {
+      state.selectedDifficulty = commandTarget.dataset.difficulty;
+      renderScenarioChooser();
+      return;
+    }
+    if (commandTarget.dataset.command === "start-scenario") {
+      void startSelectedScenario();
       return;
     }
     if (commandTarget.dataset.command === "look") {
@@ -378,6 +595,7 @@ function bindControls() {
         communication: state.selectedCommunication,
         direction: state.projection ? selectedOrderDirection(state.projection) : undefined,
       });
+      issueFormationOrder();
       renderControls();
       render();
     }
@@ -567,12 +785,18 @@ function render(): void {
   const projection = state.projection;
   if (!projection) return;
 
+  document.body.dataset.difficulty = projection.scenario.difficulty;
   document.querySelector("#time").textContent = `t=${projection.time.toFixed(1)}`;
   renderInfoWords(projection);
   renderGroup(projection);
-  renderEvents(projection.events);
+  renderDebrief(projection);
+  renderEvents(state.eventHistory.length > 0 ? state.eventHistory : projection.events);
   renderAarFeedVisibility();
   renderControls();
+  renderOrientationMode();
+  renderCoachPanel();
+  renderProductModals();
+  renderScenarioChooser();
   renderMap(projection);
 }
 
@@ -587,6 +811,500 @@ function renderAarFeedVisibility(): void {
   panel.hidden = !state.showAarFeed;
   toggle.classList.toggle("is-active", state.showAarFeed);
   toggle.setAttribute("aria-expanded", String(state.showAarFeed));
+}
+
+function renderOrientationMode(): void {
+  document.body.dataset.orientation = state.orientationMode ? "on" : "off";
+  const toggle = document.querySelector("[data-command='toggle-orientation']");
+  if (!(toggle instanceof HTMLElement)) return;
+  toggle.classList.toggle("is-active", state.orientationMode);
+  toggle.setAttribute("aria-pressed", String(state.orientationMode));
+  toggle.textContent = state.orientationMode ? "Orientering på" : "Orientering av";
+}
+
+function renderProductModals(): void {
+  renderIntroModal();
+  renderHelpModal();
+}
+
+function renderIntroModal(): void {
+  const modal = document.querySelector("#intro-modal");
+  if (!(modal instanceof HTMLElement)) return;
+  modal.hidden = !state.showIntro;
+  if (!state.showIntro) {
+    modal.innerHTML = "";
+    return;
+  }
+
+  const selectedScenario =
+    state.scenarios.find((scenario) => scenario.id === state.selectedScenarioId) ??
+    state.scenarios[0] ??
+    state.projection?.scenario;
+  const scenarioTitle = selectedScenario?.title ?? "Gruppchefens lägesbild";
+  const scenarioGoal = selectedScenario?.goal.description ?? "Led gruppen med begränsad information och lär av debriefen.";
+
+  modal.innerHTML = `
+    <section class="product-modal intro-modal" role="dialog" aria-modal="true" aria-labelledby="intro-title">
+      <div class="product-modal-header">
+        <div>
+          <p class="eyebrow">Träningsslice v0.1</p>
+          <h2 id="intro-title">Perspektivbubbla</h2>
+        </div>
+        <button type="button" class="icon-button" data-command="close-intro" title="Stäng intro">
+          <span aria-hidden="true">×</span>
+          <span class="sr-only">Stäng intro</span>
+        </button>
+      </div>
+      <div class="intro-body">
+        <p class="intro-lead">Öva gruppchefens viktigaste friktion: du ger enkla order, soldaterna uppfattar dem genom röst, tecken eller radio, och gruppen rör sig bara så bra som lägesbilden och sammanhållningen tillåter.</p>
+        <div class="intro-cards">
+          <article>
+            <strong>1. Ta ut riktning</strong>
+            <span>Klicka en hex för att lägga riktmärket. Linjen är referens för formationen, inte en automatisk marschorder.</span>
+          </article>
+          <article>
+            <strong>2. Ge ordern</strong>
+            <span>Välj metod, välj formation, och säg sedan <em>Framåt</em>. Metoden påverkar hur ordern sprids.</span>
+          </article>
+          <article>
+            <strong>3. Led som soldat</strong>
+            <span>Gruppchefen är också en soldat. När framryckningen är igång klickar du dig genom terrängen och gruppen följer.</span>
+          </article>
+        </div>
+        <div class="intro-mission">
+          <span>Aktuell start</span>
+          <strong>${escapeHtml(scenarioTitle)}</strong>
+          <p>${escapeHtml(scenarioGoal)}</p>
+        </div>
+      </div>
+      <div class="product-modal-actions">
+        <button type="button" data-command="toggle-help">Öppna hjälp</button>
+        <button type="button" data-command="start-from-intro">Välj scenario</button>
+      </div>
+    </section>`;
+}
+
+function renderHelpModal(): void {
+  const modal = document.querySelector("#help-modal");
+  if (!(modal instanceof HTMLElement)) return;
+  modal.hidden = !state.showHelp;
+  if (!state.showHelp) {
+    modal.innerHTML = "";
+    return;
+  }
+
+  modal.innerHTML = `
+    <section class="product-modal help-modal" role="dialog" aria-modal="true" aria-labelledby="help-title">
+      <div class="product-modal-header">
+        <div>
+          <p class="eyebrow">Fälthjälp</p>
+          <h2 id="help-title">Så spelar du</h2>
+        </div>
+        <button type="button" class="icon-button" data-command="close-help" title="Stäng hjälp">
+          <span aria-hidden="true">×</span>
+          <span class="sr-only">Stäng hjälp</span>
+        </button>
+      </div>
+      <div class="help-grid">
+        <article>
+          <h3>Orderflöde</h3>
+          <ol>
+            <li>Välj röst, tecken eller radio.</li>
+            <li>Klicka en hex för att sätta riktning.</li>
+            <li>Klicka formation för att gruppera.</li>
+            <li>Klicka <strong>Framåt!</strong> för framryckning.</li>
+            <li>Klicka kartan för att flytta gruppchefen.</li>
+            <li>Klicka <strong>Halt!</strong> när gruppen ska stanna.</li>
+          </ol>
+        </article>
+        <article>
+          <h3>Svårighet</h3>
+          <p><strong>Träning</strong> visar fler stödmarkeringar och text på tecken. <strong>Normal</strong> döljer teckentexterna. <strong>Realistisk</strong> gör minne och överlägg stramare.</p>
+        </article>
+        <article>
+          <h3>Karta</h3>
+          <p>Vänsterklick sätter riktning innan framryckning. Under framryckning flyttar vänsterklick gruppchefen. Shift-klick sätter ny riktning. Högerdrag panorerar och muswheel zoomar.</p>
+        </article>
+        <article>
+          <h3>Debrief</h3>
+          <p>Öppna loggknappen för score, lärpunkter och händelser. Poängen är inte facit; den pekar på orderkedja, sammanhållning, blockeringar och kontakttryck.</p>
+        </article>
+      </div>
+      <div class="product-modal-actions">
+        <button type="button" data-command="toggle-orientation">${state.orientationMode ? "Stäng orientering" : "Starta orientering"}</button>
+        <button type="button" data-command="close-help">Tillbaka</button>
+      </div>
+    </section>`;
+}
+
+function renderCoachPanel(projection = state.projection): void {
+  const panel = document.querySelector("#coach-panel");
+  if (!(panel instanceof HTMLElement)) return;
+  if (!projection || !state.orientationMode) {
+    panel.hidden = true;
+    panel.innerHTML = "";
+    return;
+  }
+
+  const step = coachStepFor(projection);
+  const progress = coachProgress(projection);
+  panel.hidden = false;
+  panel.className = `coach-panel coach-${step.tone}`;
+  panel.innerHTML = `
+    <div class="coach-kicker">Orienteringsläge</div>
+    <div class="coach-title">${escapeHtml(step.step)} · ${escapeHtml(step.title)}</div>
+    <p>${escapeHtml(step.body)}</p>
+    <div class="coach-action">${escapeHtml(step.action)}</div>
+    <div class="coach-progress">
+      ${progress
+        .map((item) => `<span class="${item.done ? "is-done" : ""}">${escapeHtml(item.label)}</span>`)
+        .join("")}
+    </div>`;
+}
+
+function coachStepFor(projection: Projection): CoachStep {
+  if (projection.player.role !== "leader") {
+    return {
+      step: "Soldat",
+      title: "Ta dig till skydd",
+      body: "Du styr en enskild soldat. Kartklick skickar förflyttning, Q/E sveper blicken och händelseloggen visar vad som hände.",
+      action: "Klicka mot skydd och håll koll på siktlinjer.",
+      tone: "ready",
+    };
+  }
+
+  const distanceToGoal = hexDistance(projection.player.coord, projection.objective.target);
+  if (distanceToGoal <= 3) {
+    return {
+      step: "6/6",
+      title: "Debriefa",
+      body: "Gruppchefen är nära målområdet. Nu är lärloopen viktigare än fler klick.",
+      action: "Öppna debriefen och se vad orderkedja, sammanhållning och riskzoner säger.",
+      tone: projection.risk.blocking.length > 0 ? "warning" : "ready",
+    };
+  }
+
+  if (!state.selectedDirection) {
+    return {
+      step: "1/6",
+      title: "Ta ut riktning",
+      body: "Formationerna använder riktmärket som referens. Det är inte samma sak som att börja gå.",
+      action: "Klicka en hex i den riktning gruppen ska orientera mot.",
+      tone: "ready",
+    };
+  }
+
+  if (!projection.activeFormation) {
+    return {
+      step: "2/6",
+      title: "Ge formationsorder",
+      body: `${displayCommunication(state.selectedCommunication)} är valt. Formationer är riktiga order och soldaterna repeterar dem genom orderkedjan.`,
+      action: `Klicka ${displayFormation(state.selectedFormation)} eller välj en annan formation.`,
+      tone: "ready",
+    };
+  }
+
+  if (projection.activeFormation.orderKind === "formation") {
+    const moving = projection.units.filter((unit) => unit.side === "friendly" && unit.intent.type === "moving").length;
+    return {
+      step: "3/6",
+      title: moving > 0 ? "Gruppen formerar" : "Klar för framåt",
+      body:
+        moving > 0
+          ? "Soldaterna tar sina platser utan att gå mot mål ännu. Ingen ska dela hex med en kamrat."
+          : "Formationens platser är satta. Framåt gör detta till en framryckning.",
+      action: moving > 0 ? "Vänta in formeringen eller ge halt om något ser fel ut." : "Klicka Framåt! när du vill börja röra gruppen.",
+      tone: moving > 0 ? "wait" : "ready",
+    };
+  }
+
+  if (projection.activeFormation.phase === "forming") {
+    return {
+      step: "4/6",
+      title: "Formerar före rörelse",
+      body: "Framåt är mottaget, men gruppen prioriterar att komma i formation innan framryckningen startar.",
+      action: "Titta efter stragglers, väntande soldater och blockerade effektzoner.",
+      tone: "wait",
+    };
+  }
+
+  if (projection.activeFormation.phase === "advancing" && projection.player.intent.type !== "moving") {
+    return {
+      step: "5/6",
+      title: "Led framryckningen",
+      body: "Nu är gruppchefen ankaret. Soldaterna följer din rörelse och stoppar om grannar tappar sammanhållning.",
+      action: "Klicka nästa terrängpunkt för gruppchefen. Shift-klick ändrar riktning.",
+      tone: projection.risk.blocking.length > 0 ? "warning" : "ready",
+    };
+  }
+
+  return {
+    step: "5/6",
+    title: "Håll ihop gruppen",
+    body: "Gruppen rör sig. Om en granne blir för långt efter väntar soldaterna hellre än att spräcka formationen.",
+    action: "Fortsätt styra gruppchefen, byt riktning med shift-klick eller ge Halt! vid behov.",
+    tone: projection.risk.blocking.length > 0 ? "warning" : "wait",
+  };
+}
+
+function coachProgress(projection: Projection): Array<{ label: string; done: boolean }> {
+  return [
+    { label: "riktning", done: Boolean(state.selectedDirection) },
+    { label: "metod", done: Boolean(state.selectedCommunication) },
+    { label: "formation", done: Boolean(projection.activeFormation) },
+    { label: "framåt", done: projection.activeFormation?.orderKind === "forward" },
+    { label: "rörelse", done: projection.activeFormation?.phase === "advancing" },
+    { label: "debrief", done: hexDistance(projection.player.coord, projection.objective.target) <= 3 },
+  ];
+}
+
+function renderDebrief(projection: Projection): void {
+  const container = document.querySelector("#debrief");
+  if (!(container instanceof HTMLElement)) return;
+  const summary = buildDebriefSummary(projection);
+  container.innerHTML = `
+    <div class="score-card grade-${summary.grade.toLowerCase()}">
+      <span>Score</span>
+      <strong>${summary.score}</strong>
+      <em>${escapeHtml(summary.grade)}</em>
+    </div>
+    <div class="metric-grid">
+      ${summary.metrics
+        .map(
+          (metric) => `<div class="metric metric-${metric.state}">
+            <span>${escapeHtml(metric.label)}</span>
+            <strong>${escapeHtml(metric.value)}</strong>
+          </div>`,
+        )
+        .join("")}
+    </div>
+    <div class="lesson-list">
+      <strong>Lärpunkter</strong>
+      <ul>
+        ${summary.lessons.map((lesson) => `<li>${escapeHtml(lesson)}</li>`).join("")}
+      </ul>
+    </div>`;
+}
+
+function buildDebriefSummary(projection: Projection): DebriefSummary {
+  const events =
+    projection.aar?.orderEvents && projection.aar.orderEvents.length > 0
+      ? projection.aar.orderEvents
+      : state.eventHistory.length > 0
+        ? state.eventHistory
+        : projection.events;
+  const issuedOrders = events.filter((event) => event.type === "formation_order_issued");
+  const distance = hexDistance(projection.player.coord, projection.objective.target);
+  const deliveries = events.filter((event) => event.type === "order_delivery_resolved");
+  const received = deliveries.filter((event) => event.payload?.status === "received").length;
+  const waits = events.filter((event) => event.type === "movement_waiting").length;
+  const blocks = events.filter((event) => event.type === "friendly_effect_blocked").length + projection.risk.blocking.length;
+  const coverageGaps = events.filter((event) => event.type === "tat_coverage_gap").length + projection.risk.coverage.filter((check) => !check.covered).length;
+  const contacts = events.filter((event) => event.type === "contact_pressure_emitted" || event.type === "probabilistic_detection_resolved").length;
+  const orderRatio = deliveries.length > 0 ? received / deliveries.length : 0;
+
+  let score = 100;
+  score -= Math.min(25, distance * 2);
+  score -= deliveries.length === 0 ? 12 : Math.round((1 - orderRatio) * 22);
+  score -= Math.min(16, waits * 2);
+  score -= Math.min(18, blocks * 3);
+  score -= Math.min(14, coverageGaps * 3);
+  score -= Math.min(18, contacts * 6);
+  score -= projection.time > 90 ? 8 : projection.time > 45 ? 3 : 0;
+  score = clamp(score, 0, 100);
+
+  const metrics: DebriefSummary["metrics"] = [
+    { label: "Målavstånd", value: `${distance} hex`, state: distance <= 3 ? "good" : distance <= 10 ? "warn" : "bad" },
+    {
+      label: "Orderkedja",
+      value: deliveries.length > 0 ? `${received}/${deliveries.length}` : "ingen",
+      state: deliveries.length > 0 && orderRatio === 1 ? "good" : deliveries.length > 0 && orderRatio >= 0.75 ? "warn" : "bad",
+    },
+    { label: "Väntan", value: String(waits), state: waits === 0 ? "good" : waits <= 4 ? "warn" : "bad" },
+    { label: "Blockering", value: String(blocks), state: blocks === 0 ? "good" : blocks <= 3 ? "warn" : "bad" },
+    { label: "Täckningsgap", value: String(coverageGaps), state: coverageGaps === 0 ? "good" : coverageGaps <= 2 ? "warn" : "bad" },
+    { label: "Kontakttryck", value: String(contacts), state: contacts === 0 ? "good" : "bad" },
+  ];
+
+  const lessons: string[] = [];
+  if (!state.selectedDirection) lessons.push("Sätt riktning innan formation och framåt så tätens linje får en tydlig referens.");
+  if (issuedOrders.length === 0) lessons.push("Ge en formationsorder före framåt, så orderkedjan syns i debriefen.");
+  if (deliveries.length > 0 && orderRatio < 1) lessons.push("Alla uppfattade inte ordern. Byt metod, minska avstånd eller använd radio när läget kräver det.");
+  if (waits > 0) lessons.push("Sammanhållningen styr tempo. När någon hamnar efter väntar grannarna hellre än att spräcka tätet.");
+  if (blocks > 0) lessons.push("Blockerade effektzoner tyder på för tät gruppering eller fel blickriktning.");
+  if (coverageGaps > 0) lessons.push("Minst ett tät saknade täckning. Vänd, sprid eller stanna upp innan nästa rörelse.");
+  if (contacts > 0) lessons.push("Motståndaren fick kontakttryck. Använd skydd, kortare exponering och bättre orientering.");
+  if (distance <= 3 && contacts === 0 && blocks === 0) lessons.push("Snyggt: du nådde målområdet utan kontakttryck eller blockerade effektzoner.");
+  if (lessons.length === 0) lessons.push("Fortsätt spela fram till målområdet och öppna debriefen igen.");
+
+  return {
+    score,
+    grade: score >= 85 ? "A" : score >= 70 ? "B" : score >= 55 ? "C" : score >= 40 ? "D" : "E",
+    metrics,
+    lessons: lessons.slice(0, 4),
+  };
+}
+
+function renderScenarioChooser(): void {
+  const chooser = document.querySelector("#scenario-chooser");
+  if (!(chooser instanceof HTMLElement)) return;
+
+  chooser.hidden = !state.showScenarioChooser;
+  const selectedScenario =
+    state.scenarios.find((scenario) => scenario.id === state.selectedScenarioId) ??
+    state.scenarios[0] ??
+    state.projection?.scenario;
+  if (!selectedScenario) {
+    chooser.innerHTML = `<div class="scenario-modal"><div class="scenario-empty">Laddar scenarier...</div></div>`;
+    return;
+  }
+
+  const difficultyOptions =
+    state.difficulties.length > 0
+      ? state.difficulties
+      : [
+          { id: "training" as const, label: "Träning", description: "Tydliga överlägg och förklaringar." },
+          { id: "normal" as const, label: "Normal", description: "Mindre hjälp och mer osäker lägesbild." },
+          { id: "realistic" as const, label: "Realistisk", description: "Kortare minne och färre markeringar." },
+        ];
+  const activeDifficulty = state.selectedDifficulty ?? selectedScenario.defaultDifficulty;
+  const troopRows = selectedScenario.troop
+    .map(
+      (unit) => `<li>
+        <strong>${escapeHtml(unit.name)}</strong>
+        <span>${escapeHtml(displayScenarioRole(unit))}</span>
+      </li>`,
+    )
+    .join("");
+  const difficultyCards = difficultyOptions
+    .map(
+      (difficulty) => `<button
+        type="button"
+        class="difficulty-card ${difficulty.id === activeDifficulty ? "is-active" : ""}"
+        data-command="select-difficulty"
+        data-difficulty="${difficulty.id}"
+      >
+        <strong>${escapeHtml(difficulty.label)}</strong>
+        <span>${escapeHtml(difficulty.description)}</span>
+      </button>`,
+    )
+    .join("");
+
+  chooser.innerHTML = `
+    <div class="scenario-modal" role="dialog" aria-modal="true" aria-labelledby="scenario-title">
+      <div class="scenario-header">
+        <div>
+          <h2 id="scenario-title">Scenario</h2>
+          <p>${escapeHtml(selectedScenario.title)} - ${escapeHtml(displayDifficulty(activeDifficulty))}</p>
+        </div>
+        <button type="button" class="icon-button" data-command="close-scenario" title="Stäng scenario-väljaren">
+          <span aria-hidden="true">×</span>
+          <span class="sr-only">Stäng scenario-väljaren</span>
+        </button>
+      </div>
+
+      <div class="scenario-body">
+        <div class="scenario-list" aria-label="Scenarier">
+          ${state.scenarios
+            .map(
+              (scenario) => `<button
+                type="button"
+                class="scenario-card ${scenario.id === selectedScenario.id ? "is-active" : ""}"
+                data-command="select-scenario"
+                data-scenario-id="${scenario.id}"
+              >
+                <span>${escapeHtml(scenario.subtitle)}</span>
+                <strong>${escapeHtml(scenario.title)}</strong>
+              </button>`,
+            )
+            .join("")}
+        </div>
+
+        <section class="scenario-detail">
+          <p class="scenario-description">${escapeHtml(selectedScenario.description)}</p>
+          <div class="scenario-brief">
+            <div>
+              <span>Lektionsfokus</span>
+              <strong>${escapeHtml(scenarioLesson(selectedScenario.id))}</strong>
+            </div>
+            <div>
+              <span>Första rimliga order</span>
+              <strong>${escapeHtml(firstOrderHint(selectedScenario, activeDifficulty))}</strong>
+            </div>
+          </div>
+          <div class="scenario-columns">
+            <div>
+              <h3>Trupp</h3>
+              <ol class="scenario-troop">${troopRows}</ol>
+            </div>
+            <div>
+              <h3>Mål</h3>
+              <p class="scenario-goal-title">${escapeHtml(selectedScenario.goal.title)}</p>
+              <p>${escapeHtml(selectedScenario.goal.description)}</p>
+              <p class="scenario-hex">hex ${selectedScenario.goal.target.q},${selectedScenario.goal.target.r}</p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="scenario-actions">
+        <div class="scenario-difficulty-chooser" role="group" aria-label="Svårighet">
+          <span class="scenario-actions-label">Svårighet</span>
+          <div class="difficulty-grid">${difficultyCards}</div>
+        </div>
+        <button type="button" data-command="start-scenario" ${state.startingScenario ? "disabled" : ""}>
+          ${state.startingScenario ? "Startar..." : "Starta scenario"}
+        </button>
+      </div>
+    </div>`;
+}
+
+async function startSelectedScenario(): Promise<void> {
+  if (!state.selectedScenarioId || state.startingScenario) return;
+  state.startingScenario = true;
+  renderScenarioChooser();
+  try {
+    console.info("[scenario] start requested", {
+      scenarioId: state.selectedScenarioId,
+      difficulty: state.selectedDifficulty,
+    });
+    const response = await fetch("/api/session", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        scenarioId: state.selectedScenarioId,
+        difficulty: state.selectedDifficulty,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`Scenario start failed with ${response.status}`);
+    }
+    const projection = (await response.json()) as Projection;
+    state.projection = projection;
+    state.selectedScenarioId = projection.scenario.id;
+    state.selectedDifficulty = projection.scenario.difficulty;
+    state.selectedFormation = projection.scenario.recommendedFormation ?? "line";
+    state.hasCentered = false;
+    state.directionCue = undefined;
+    state.directionCuePoint = undefined;
+    state.selectedDirection = undefined;
+    state.loggedDiagnostics.clear();
+    state.eventHistory = [];
+    mergeEventHistory(projection.events);
+    state.showScenarioChooser = false;
+    centerOnPlayerOnce();
+    render();
+    console.info("[scenario] started", {
+      scenarioId: projection.scenario.id,
+      difficulty: projection.scenario.difficulty,
+      units: projection.units.length,
+    });
+  } catch (error) {
+    console.warn("[scenario] failed to start scenario", error);
+  } finally {
+    state.startingScenario = false;
+    renderScenarioChooser();
+  }
 }
 
 function renderMapIfReady(): void {
@@ -628,6 +1346,7 @@ function renderInfoWords(projection: Projection): void {
   setHoverDetails("#info-group", groupDetails(projection));
   setHoverDetails("#info-goal", goalDetails(projection));
   setHoverDetails("#info-orders", orderDetails(projection));
+  setHoverDetails("#info-terrain", terrainLegendDetails());
 }
 
 function setHoverDetails(selector: string, details: string): void {
@@ -660,6 +1379,23 @@ function renderControls(): void {
     button.setAttribute("aria-pressed", String(selected));
     button.setAttribute("aria-selected", String(selected));
   });
+  renderGestureHints();
+}
+
+function renderGestureHints(): void {
+  const difficulty = state.projection?.scenario.difficulty ?? state.selectedDifficulty;
+  const showGestureHints = difficulty === "training";
+  document.querySelectorAll(".gesture-command").forEach((button) => {
+    if (!(button instanceof HTMLElement)) return;
+    const label = button.dataset.gestureLabel ?? button.getAttribute("title") ?? button.textContent?.trim() ?? "";
+    button.dataset.gestureLabel = label;
+    button.setAttribute("aria-label", label);
+    if (showGestureHints) {
+      button.setAttribute("title", label);
+    } else {
+      button.removeAttribute("title");
+    }
+  });
 }
 
 function renderEvents(events: EventProjection[]): void {
@@ -690,6 +1426,7 @@ function renderMap(projection: Projection): void {
       return `<polygon class="hex ${terrainClass} visibility-${visibility}" points="${hexPoints(point, size)}" data-q="${tile.coord.q}" data-r="${tile.coord.r}" data-visibility="${visibility}"${memoryStyle}></polygon>`;
     })
     .join("");
+  const terrainIconMarkup = renderTerrainIcons(tiles, size);
   const objectiveMarkup = renderObjectiveMarker(projection, size);
   const orderRangeMarkup =
     projection.player.role === "leader"
@@ -728,7 +1465,7 @@ function renderMap(projection: Projection): void {
     .join("");
 
   svg.setAttribute("viewBox", `${state.pan.x} ${state.pan.y} ${svg.clientWidth || 800} ${svg.clientHeight || 600}`);
-  svg.innerHTML = `<g>${tileMarkup}${effectZoneMarkup}${orderRangeMarkup}${objectiveMarkup}${directionCueMarkup}${blockingMarkup}${intentMarkup}${unitMarkup}</g>`;
+  svg.innerHTML = `<g>${tileMarkup}${terrainIconMarkup}${effectZoneMarkup}${orderRangeMarkup}${objectiveMarkup}${directionCueMarkup}${blockingMarkup}${intentMarkup}${unitMarkup}</g>`;
 
   svg.querySelectorAll(".hex, .objective-hitbox").forEach((hex) => {
     hex.addEventListener("pointerenter", (event) => {
@@ -743,6 +1480,67 @@ function renderMap(projection: Projection): void {
     });
     hex.addEventListener("pointerleave", hideHexTooltip);
   });
+}
+
+function renderTerrainIcons(tiles: HexTileProjection[], size: number): string {
+  const tilesByKey = new Map(tiles.map((tile) => [coordKey(tile.coord), tile]));
+  return tiles.map((tile) => renderTerrainIcon(tile, size, tilesByKey)).join("");
+}
+
+function renderTerrainIcon(tile: HexTileProjection, size: number, tilesByKey: Map<string, HexTileProjection>): string {
+  const visibility = tile.visibility ?? "visible";
+  if (visibility === "unknown") return "";
+  const point = axialToPixel(tile.coord, size);
+  const scale = size / 8;
+  const memoryStyle =
+    typeof tile.memoryOpacity === "number"
+      ? ` style="--memory-opacity: ${tile.memoryOpacity}"`
+      : "";
+
+  if (tile.terrain === "road" || tile.terrain === "ditch" || tile.terrain === "wall") {
+    const rotation = terrainAxisAngle(tile, tilesByKey);
+    const icon =
+      tile.terrain === "road"
+        ? `<path d="M -6 0 L 6 0"></path><path class="terrain-icon-detail" d="M -4 0 L -2 0 M 1 0 L 3 0"></path>`
+        : tile.terrain === "ditch"
+          ? `<path d="M -6 -2 C -2 1 2 -3 6 0"></path><path d="M -6 3 C -2 5 2 1 6 4"></path>`
+          : `<rect x="-6" y="-2.5" width="4" height="3"></rect><rect x="-1.5" y="-2.5" width="3.5" height="3"></rect><rect x="2.5" y="-2.5" width="3.5" height="3"></rect><rect x="-3.8" y="1" width="4" height="3"></rect><rect x=".7" y="1" width="4" height="3"></rect>`;
+    return `<g class="terrain-icon terrain-icon-${tile.terrain} visibility-${visibility}" transform="translate(${point.x} ${point.y}) rotate(${rotation}) scale(${scale})"${memoryStyle}>${icon}</g>`;
+  }
+
+  const icon =
+    tile.terrain === "forest"
+      ? `<path d="M -5 5 L -2 -4 L 1 5 Z"></path><path d="M 1 5 L 4 -5 L 7 5 Z"></path><path class="terrain-icon-detail" d="M -2 5 L -2 7 M 4 5 L 4 7"></path>`
+      : tile.terrain === "grass"
+        ? `<path d="M -5 5 C -5 1 -4 -2 -1 -5"></path><path d="M 0 5 C 0 1 1 -2 4 -5"></path><path d="M 5 5 C 4 2 3 0 1 -2"></path>`
+        : tile.terrain === "field"
+          ? `<circle cx="-3.5" cy="-2.5" r=".8"></circle><circle cx="2.5" cy="-1" r=".8"></circle><circle cx="-1" cy="3" r=".8"></circle>`
+          : "";
+  if (!icon) return "";
+  return `<g class="terrain-icon terrain-icon-${tile.terrain} visibility-${visibility}" transform="translate(${point.x} ${point.y}) scale(${scale})"${memoryStyle}>${icon}</g>`;
+}
+
+function terrainAxisAngle(tile: HexTileProjection, tilesByKey: Map<string, HexTileProjection>): number {
+  const axes: Array<{ direction: Direction; opposite: Direction }> = [
+    { direction: "SE", opposite: "NW" },
+    { direction: "N", opposite: "S" },
+    { direction: "NE", opposite: "SW" },
+  ];
+  const bestAxis = axes
+    .map((axis) => ({
+      direction: axis.direction,
+      score:
+        matchingTerrainNeighbour(tile, axis.direction, tilesByKey) +
+        matchingTerrainNeighbour(tile, axis.opposite, tilesByKey),
+    }))
+    .sort((a, b) => b.score - a.score)[0]?.direction ?? "SE";
+  const vector = directionToPixelVector(bestAxis, 1);
+  return (Math.atan2(vector.y, vector.x) * 180) / Math.PI;
+}
+
+function matchingTerrainNeighbour(tile: HexTileProjection, direction: Direction, tilesByKey: Map<string, HexTileProjection>): number {
+  const neighbour = tilesByKey.get(coordKey(addCoord(tile.coord, directionVectors[direction])));
+  return neighbour && neighbour.visibility !== "unknown" && neighbour.terrain === tile.terrain ? 1 : 0;
 }
 
 function renderEffectZones(projection: Projection, size: number): string {
@@ -767,6 +1565,7 @@ function renderEffectZones(projection: Projection, size: number): string {
 }
 
 function renderBlockingWarnings(projection: Projection, size: number): string {
+  if (projection.perception.informationMode === "realistic") return "";
   return projection.risk.blocking
     .map((warning) => {
       const fromUnit = projection.units.find((unit) => unit.id === warning.unitId);
@@ -794,6 +1593,22 @@ function setDirectionCue(target: HexCoord, projection: Projection): { ok: boolea
     direction: state.selectedDirection,
     cue: state.directionCue,
   };
+}
+
+function issueFormationOrder(): void {
+  const projection = state.projection;
+  if (!projection || projection.player.role !== "leader") return;
+  send({
+    type: "issue_formation_order",
+    unitId: projection.player.id,
+    target: projection.player.coord,
+    formation: state.selectedFormation,
+    communication: state.selectedCommunication,
+    direction: selectedOrderDirection(projection),
+    directionTarget: selectedDirectionTarget(projection),
+    directionTargetPoint: selectedDirectionTargetPoint(projection),
+    issuedAt: projection.time,
+  });
 }
 
 function issueForwardOrder(): void {
@@ -964,6 +1779,19 @@ function displayTerrain(terrain: string): string {
   return labels[terrain] ?? terrain;
 }
 
+function terrainLegendDetails(): string {
+  return [
+    "Terrängtecken",
+    "Skog: två små träd, blockerar sikt och ger skyl.",
+    "Högt gräs: strån, ger skyl men lite skydd.",
+    "Dike: blå dubbellinje, ger skydd och skyl.",
+    "Stenmur: små block, mycket skydd och blockerar sikt.",
+    "Väg: ljus linje, snabb men exponerad.",
+    "Öppen mark: diskreta prickar, lätt att röra sig över men exponerad.",
+    "Bleka tecken är ihågkommen terräng som kan vara inaktuell.",
+  ].join("\n");
+}
+
 function formatMaybeNumber(value: number | undefined): string {
   return typeof value === "number" ? String(value) : "-";
 }
@@ -1012,6 +1840,8 @@ function groupDetails(projection: Projection): string {
 
 function goalDetails(projection: Projection): string {
   return [
+    `scenario: ${projection.scenario.title}`,
+    `svårighet: ${displayDifficulty(projection.scenario.difficulty)}`,
     objectiveTitle(projection.objective.title),
     `målhex: ${projection.objective.target.q},${projection.objective.target.r}`,
     `status: ${displayObjectiveStatus(projection.objective.status)}`,
@@ -1422,6 +2252,14 @@ function isCommunication(value: string | undefined): value is CommunicationMetho
   return communications.includes(value as CommunicationMethod);
 }
 
+function isScenarioId(value: string | undefined): value is ScenarioId {
+  return value === "cover_to_cover" || value === "risk_zone_blocking" || value === "leader_lost_picture";
+}
+
+function isDifficulty(value: string | undefined): value is DifficultyLevel {
+  return value === "training" || value === "normal" || value === "realistic";
+}
+
 function shortOrderId(orderId: string): string {
   return orderId.split("_order_").at(-1) ?? orderId;
 }
@@ -1456,6 +2294,52 @@ function displayElementName(element: string | undefined): string {
 function displayElementPosition(unit: UnitProjection): string {
   const element = displayElement(unit.element);
   return unit.elementPosition ? `${element} / position ${unit.elementPosition}` : element;
+}
+
+function displayScenarioRole(unit: ScenarioTroopPreview): string {
+  const role =
+    unit.role === "leader"
+      ? "gruppchef"
+      : unit.role === "deputy_leader"
+        ? "stf grpc"
+        : unit.role === "observer"
+          ? "observatör"
+          : "soldat";
+  const element =
+    unit.element === "tat_1"
+      ? "tät 1"
+      : unit.element === "tat_2"
+        ? "tät 2"
+        : unit.element === "command"
+          ? "chefsdel"
+          : "";
+  return [role, element, unit.elementPosition ? `pos ${unit.elementPosition}` : ""].filter(Boolean).join(" / ");
+}
+
+function scenarioLesson(id: ScenarioId): string {
+  const lessons: Record<ScenarioId, string> = {
+    cover_to_cover: "Enskild rörelse, sikt, skydd och exponering.",
+    risk_zone_blocking: "Två soldater, effektzoner och hur kamrater blockerar varandra.",
+    leader_lost_picture: "Gruppchef: riktning, orderkedja, tät, sammanhållning och tappad lägesbild.",
+  };
+  return lessons[id];
+}
+
+function firstOrderHint(scenario: Pick<ScenarioOption, "id" | "recommendedFormation">, difficulty: DifficultyLevel): string {
+  if (scenario.id === "cover_to_cover") return "Klicka skyddad terräng, spana med Q/E.";
+  if (scenario.id === "risk_zone_blocking") return "Orientera båda soldaterna och undvik blockerad effektzon.";
+  const formation = displayFormation(scenario.recommendedFormation ?? "line");
+  const hint = difficulty === "training" ? "teckenhjälp syns" : difficulty === "normal" ? "tecken utan text" : "kort minne";
+  return `Sätt riktning, välj ${formation}, Framåt (${hint}).`;
+}
+
+function displayDifficulty(difficulty: DifficultyLevel): string {
+  const labels: Record<DifficultyLevel, string> = {
+    training: "Träning",
+    normal: "Normal",
+    realistic: "Realistisk",
+  };
+  return labels[difficulty] ?? difficulty;
 }
 
 function perceivedUnitFor(projection: Projection, unitId: string): PerceivedUnitProjection | undefined {

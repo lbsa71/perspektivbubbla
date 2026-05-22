@@ -8,6 +8,9 @@ export type UnitRole = "leader" | "deputy_leader" | "soldier" | "observer";
 export type GroupElement = "command" | "tat_1" | "tat_2";
 export type HexVisibility = "visible" | "memory" | "unknown";
 export type FormationPhase = "forming" | "advancing";
+export type DifficultyLevel = "training" | "normal" | "realistic";
+export type ScenarioId = "cover_to_cover" | "risk_zone_blocking" | "leader_lost_picture";
+type ScenarioKind = "soldier" | "risk_zone" | "group_commander";
 
 export type HexCoord = {
   q: number;
@@ -38,7 +41,45 @@ export type ProjectedHexTile = HexTile & {
   memoryOpacity?: number;
 };
 
-export type InformationMode = "training" | "normal" | "realistic";
+export type InformationMode = DifficultyLevel;
+
+export type ScenarioTroopPreview = {
+  id: string;
+  name: string;
+  role: UnitRole;
+  element?: GroupElement;
+  elementPosition?: number;
+};
+
+export type ScenarioOption = {
+  id: ScenarioId;
+  title: string;
+  subtitle: string;
+  description: string;
+  troop: ScenarioTroopPreview[];
+  goal: {
+    title: string;
+    description: string;
+    target: HexCoord;
+  };
+  defaultDifficulty: DifficultyLevel;
+  recommendedFormation?: Formation;
+};
+
+export type ScenarioRuntime = {
+  id: ScenarioId;
+  title: string;
+  subtitle: string;
+  description: string;
+  difficulty: DifficultyLevel;
+  troop: ScenarioTroopPreview[];
+  goal: {
+    title: string;
+    description: string;
+    target: HexCoord;
+  };
+  recommendedFormation?: Formation;
+};
 
 export type EffectZoneProjection = {
   unitId: string;
@@ -151,6 +192,8 @@ export type GameMap = {
 export type WorldState = {
   id: string;
   seed: string;
+  scenario: ScenarioRuntime;
+  difficulty: DifficultyLevel;
   time: number;
   objective: ObjectiveState;
   map: GameMap;
@@ -259,7 +302,9 @@ export type PhaseOneOverrides = {
 
 export type CreateSessionOptions = {
   seed?: string;
-  scenario?: "soldier" | "group_commander";
+  scenario?: "soldier" | "group_commander" | "risk_zone" | ScenarioId;
+  scenarioId?: ScenarioId;
+  difficulty?: DifficultyLevel;
   overrides?: PhaseOneOverrides;
 };
 
@@ -270,6 +315,7 @@ export type AdvanceOptions = {
 export type Projection = {
   sessionId: string;
   time: number;
+  scenario: ScenarioRuntime;
   objective: ObjectiveState;
   activeFormation?: FormationState;
   map: {
@@ -298,6 +344,7 @@ export type Projection = {
     exposureSamples: Array<{ time: number; unitId: string; exposure: number }>;
     contactEvents: DomainEvent[];
     blockingEvents: DomainEvent[];
+    orderEvents: DomainEvent[];
     reportEvents: DomainEvent[];
     heardEvents: HeardEventProjection[];
   };
@@ -328,11 +375,84 @@ const VISIBILITY_MEMORY_SECONDS = 10;
 const EFFECT_ZONE_RANGE_HEXES = 6;
 const HEARD_EVENT_WINDOW_SECONDS = 12;
 
+const SCENARIO_OPTIONS: Array<ScenarioOption & { kind: ScenarioKind; start: HexCoord; facing: Direction }> = [
+  {
+    id: "cover_to_cover",
+    kind: "soldier",
+    title: "Från skydd till skydd",
+    subtitle: "En soldat",
+    description: "Rör dig från ett utsatt läge till nästa skydd utan att tappa orienteringen eller bygga onödig exponering.",
+    start: { q: 8, r: 50 },
+    facing: "SE",
+    troop: [
+      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "command" },
+    ],
+    goal: {
+      title: "Ta dig till skyddspunkten",
+      description: "Välj väg, håll koll på siktfältet och använd terrängens skydd och skyl.",
+      target: { q: 30, r: 50 },
+    },
+    defaultDifficulty: "training",
+  },
+  {
+    id: "risk_zone_blocking",
+    kind: "risk_zone",
+    title: "Riskzon och blockering",
+    subtitle: "Två soldater",
+    description: "För två soldater framåt utan att de skymmer varandras effektzoner eller tappar täckning.",
+    start: { q: 8, r: 50 },
+    facing: "SE",
+    troop: [
+      { id: "LEADER_1", name: "Lind", role: "leader", element: "command", elementPosition: 1 },
+      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "tat_1", elementPosition: 1 },
+    ],
+    goal: {
+      title: "Passera utan att blockera",
+      description: "Justera rörelse och blick så att båda kan bidra framåt.",
+      target: { q: 24, r: 50 },
+    },
+    defaultDifficulty: "training",
+    recommendedFormation: "line",
+  },
+  {
+    id: "leader_lost_picture",
+    kind: "group_commander",
+    title: "Skadad soldat och tappad lägesbild",
+    subtitle: "Gruppchef",
+    description: "Led en åttamannagrupp när rapporter, blockeringar och status inte längre är helt säkra.",
+    start: { q: 8, r: 50 },
+    facing: "SE",
+    troop: [
+      { id: "LEADER_1", name: "Lind", role: "leader", element: "command", elementPosition: 1 },
+      { id: "DEPUTY_1", name: "Nordin", role: "deputy_leader", element: "command", elementPosition: 2 },
+      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "tat_1", elementPosition: 1 },
+      { id: "FRIENDLY_2", name: "Berg", role: "soldier", element: "tat_1", elementPosition: 2 },
+      { id: "FRIENDLY_3", name: "Ceder", role: "soldier", element: "tat_1", elementPosition: 3 },
+      { id: "FRIENDLY_4", name: "Dahl", role: "soldier", element: "tat_2", elementPosition: 1 },
+      { id: "FRIENDLY_5", name: "Ek", role: "soldier", element: "tat_2", elementPosition: 2 },
+      { id: "FRIENDLY_6", name: "Falk", role: "soldier", element: "tat_2", elementPosition: 3 },
+    ],
+    goal: {
+      title: "För gruppen till skydd",
+      description: "För gruppen över öppen mark och behåll tillräcklig lägesbild för att följa upp tappad status.",
+      target: { q: 30, r: 50 },
+    },
+    defaultDifficulty: "normal",
+    recommendedFormation: "line",
+  },
+];
+
+export function listScenarioOptions(): ScenarioOption[] {
+  return SCENARIO_OPTIONS.map(({ kind: _kind, start: _start, facing: _facing, ...option }) => clone(option));
+}
+
 export function createPhaseOneSession(options: CreateSessionOptions = {}): Session {
-  const seed = options.seed ?? "phase-one";
+  const scenarioOption = resolveScenarioOption(options);
+  const difficulty = options.difficulty ?? scenarioOption.defaultDifficulty;
+  const seed = options.seed ?? `${scenarioOption.id}:${difficulty}`;
   const sessionId = `session_${hashString(seed).toString(16)}`;
   let sequence = 0;
-  const initialWorld = buildInitialWorld(sessionId, seed, options.scenario ?? "soldier", options.overrides);
+  const initialWorld = buildInitialWorld(sessionId, seed, scenarioOption, difficulty, options.overrides);
   const events: DomainEvent[] = [
     {
       id: `${sessionId}_${sequence}`,
@@ -340,7 +460,7 @@ export function createPhaseOneSession(options: CreateSessionOptions = {}): Sessi
       sequence: sequence++,
       time: 0,
       type: "session_started",
-      payload: { seed },
+      payload: { seed, scenarioId: scenarioOption.id, difficulty },
     },
     {
       id: `${sessionId}_${sequence}`,
@@ -386,6 +506,24 @@ export function replayEvents(events: DomainEvent[]): Session {
   }
 
   return replayed;
+}
+
+function resolveScenarioOption(options: CreateSessionOptions): (typeof SCENARIO_OPTIONS)[number] {
+  const requested = options.scenarioId ?? options.scenario ?? "cover_to_cover";
+  if (requested === "soldier") {
+    return scenarioOptionById("cover_to_cover");
+  }
+  if (requested === "risk_zone") {
+    return scenarioOptionById("risk_zone_blocking");
+  }
+  if (requested === "group_commander") {
+    return scenarioOptionById("leader_lost_picture");
+  }
+  return scenarioOptionById(requested as ScenarioId);
+}
+
+function scenarioOptionById(id: ScenarioId): (typeof SCENARIO_OPTIONS)[number] {
+  return SCENARIO_OPTIONS.find((scenario) => scenario.id === id) ?? SCENARIO_OPTIONS[0];
 }
 
 export function dispatchCommand(session: Session, command: PlayerCommand): Session {
@@ -534,6 +672,7 @@ export function projectSession(session: Session, role: "player" | "observer" = "
   return {
     sessionId: session.id,
     time: session.world.time,
+    scenario: clone(session.world.scenario),
     objective: clone(session.world.objective),
     activeFormation: session.world.activeFormation ? clone(session.world.activeFormation) : undefined,
     map: {
@@ -555,7 +694,7 @@ export function projectSession(session: Session, role: "player" | "observer" = "
     events,
     risk,
     perception: {
-      informationMode: "training",
+      informationMode: session.world.difficulty,
       lastKnownUnits: perceivedUnitsFor(session, player, visibleKeys, rememberedHexes, role),
       heardEvents,
       reports,
@@ -575,6 +714,7 @@ export function projectSession(session: Session, role: "player" | "observer" = "
         .filter((event) => event.type === "probabilistic_detection_resolved" || event.type === "contact_pressure_emitted")
         .map(clone),
       blockingEvents: session.events.filter((event) => event.type === "friendly_effect_blocked" || event.type === "tat_coverage_gap").map(clone),
+      orderEvents: session.events.filter(isOrderFlowEvent).slice(-500).map(clone),
       reportEvents: session.events.filter((event) => event.type === "status_report_emitted").map(clone),
       heardEvents,
     },
@@ -595,13 +735,14 @@ function projectTileVisibility(
   const lastSeenAt = rememberedHexes[key];
   if (typeof lastSeenAt === "number") {
     const memoryAge = Math.max(0, world.time - lastSeenAt);
-    if (memoryAge < VISIBILITY_MEMORY_SECONDS) {
+    const memoryWindow = visibilityMemorySeconds(world.difficulty);
+    if (memoryAge < memoryWindow) {
       return {
         ...clone(tile),
         visibility: "memory",
         lastSeenAt,
         memoryAge: round(memoryAge),
-        memoryOpacity: round(clamp(1 - memoryAge / VISIBILITY_MEMORY_SECONDS, 0, 1)),
+        memoryOpacity: round(clamp(1 - memoryAge / memoryWindow, 0, 1)),
       };
     }
   }
@@ -616,6 +757,12 @@ function projectTileVisibility(
     exposure: 0,
     visibility: "unknown",
   };
+}
+
+function visibilityMemorySeconds(difficulty: DifficultyLevel): number {
+  if (difficulty === "realistic") return 4;
+  if (difficulty === "normal") return 8;
+  return VISIBILITY_MEMORY_SECONDS;
 }
 
 function projectionEvents(session: Session): DomainEvent[] {
@@ -953,20 +1100,22 @@ function dispatchFormationToTarget(
 function buildInitialWorld(
   sessionId: string,
   seed: string,
-  scenario: "soldier" | "group_commander",
+  scenarioOption: (typeof SCENARIO_OPTIONS)[number],
+  difficulty: DifficultyLevel,
   overrides?: PhaseOneOverrides,
 ): WorldState {
   const map = buildMap(seed, overrides?.terrainPatches ?? []);
+  const start = overrides?.player?.coord ?? scenarioOption.start;
   const player: Unit = {
     id: "FRIENDLY_1",
     name: "Andersson",
     side: "friendly",
     role: "soldier",
     element: "command",
-    position: axialToMapPoint(overrides?.player?.coord ?? { q: 8, r: 50 }),
-    coord: overrides?.player?.coord ?? { q: 8, r: 50 },
-    facing: overrides?.player?.facing ?? "SE",
-    lookDirection: overrides?.player?.lookDirection ?? overrides?.player?.facing ?? "SE",
+    position: axialToMapPoint(start),
+    coord: start,
+    facing: overrides?.player?.facing ?? scenarioOption.facing,
+    lookDirection: overrides?.player?.lookDirection ?? overrides?.player?.facing ?? scenarioOption.facing,
     health: 100,
     stamina: 100,
     stress: 10,
@@ -975,7 +1124,12 @@ function buildInitialWorld(
     intent: { type: "idle" },
     alerted: false,
   };
-  const friendlies = scenario === "group_commander" ? buildGroupCommanderUnits(overrides) : [player];
+  const friendlies =
+    scenarioOption.kind === "group_commander"
+      ? buildGroupCommanderUnits(overrides, scenarioOption)
+      : scenarioOption.kind === "risk_zone"
+        ? buildRiskZoneUnits(overrides, scenarioOption)
+        : [player];
   const opposingOverrides = overrides?.opposing ?? [
     { id: "OP_1", coord: { q: 64, r: 45 }, facing: "NW", posture: "crouched" },
     { id: "OP_2", coord: { q: 72, r: 58 }, facing: "NW", posture: "standing" },
@@ -999,19 +1153,27 @@ function buildInitialWorld(
   }));
 
   return refreshVisibilityMemory(indexWorld({
-    id: sessionId,
-    seed,
-    time: 0,
-    objective: {
-      id: scenario === "group_commander" ? "move_group_to_cover" : "reach_cover",
-      title: scenario === "group_commander" ? "För gruppen till skydd" : "Ta dig till skyddspunkten",
-      description:
-        scenario === "group_commander"
-          ? "Ge en formationsorder och för gruppen från den utsatta startplatsen till den markerade skyddspunkten."
-          : "Förflytta dig från den utsatta startplatsen till den markerade skyddspunkten utan att motståndarobservatörer bygger kontakttryck.",
-      target: { q: 30, r: 50 },
-      status: "active",
-    },
+      id: sessionId,
+      seed,
+      scenario: {
+        id: scenarioOption.id,
+        title: scenarioOption.title,
+        subtitle: scenarioOption.subtitle,
+        description: scenarioOption.description,
+        difficulty,
+        troop: scenarioOption.troop,
+        goal: scenarioOption.goal,
+        recommendedFormation: scenarioOption.recommendedFormation,
+      },
+      difficulty,
+      time: 0,
+      objective: {
+        id: scenarioOption.id,
+        title: scenarioOption.goal.title,
+        description: scenarioOption.goal.description,
+        target: scenarioOption.goal.target,
+        status: "active",
+      },
     map,
     units: [...friendlies, ...opposing],
     unitsById: {},
@@ -1019,7 +1181,8 @@ function buildInitialWorld(
   }));
 }
 
-function buildGroupCommanderUnits(overrides?: PhaseOneOverrides): Unit[] {
+function buildGroupCommanderUnits(overrides?: PhaseOneOverrides, scenarioOption = scenarioOptionById("leader_lost_picture")): Unit[] {
+  const start = overrides?.player?.coord ?? scenarioOption.start;
   const leader: Unit = {
     id: "LEADER_1",
     name: "Lind",
@@ -1027,10 +1190,10 @@ function buildGroupCommanderUnits(overrides?: PhaseOneOverrides): Unit[] {
     role: "leader",
     element: "command",
     elementPosition: 1,
-    position: axialToMapPoint(overrides?.player?.coord ?? { q: 8, r: 50 }),
-    coord: overrides?.player?.coord ?? { q: 8, r: 50 },
-    facing: overrides?.player?.facing ?? "SE",
-    lookDirection: overrides?.player?.lookDirection ?? overrides?.player?.facing ?? "SE",
+    position: axialToMapPoint(start),
+    coord: start,
+    facing: overrides?.player?.facing ?? scenarioOption.facing,
+    lookDirection: overrides?.player?.lookDirection ?? overrides?.player?.facing ?? scenarioOption.facing,
     health: 100,
     stamina: 100,
     stress: 12,
@@ -1092,6 +1255,51 @@ function buildGroupCommanderUnits(overrides?: PhaseOneOverrides): Unit[] {
   );
 
   return [leader, deputy, ...soldiers];
+}
+
+function buildRiskZoneUnits(overrides?: PhaseOneOverrides, scenarioOption = scenarioOptionById("risk_zone_blocking")): Unit[] {
+  const start = overrides?.player?.coord ?? scenarioOption.start;
+  const leaderFacing = overrides?.player?.facing ?? scenarioOption.facing;
+  const leader: Unit = {
+    id: "LEADER_1",
+    name: "Lind",
+    side: "friendly",
+    role: "leader",
+    element: "command",
+    elementPosition: 1,
+    position: axialToMapPoint(start),
+    coord: start,
+    facing: leaderFacing,
+    lookDirection: overrides?.player?.lookDirection ?? leaderFacing,
+    health: 100,
+    stamina: 100,
+    stress: 8,
+    posture: overrides?.player?.posture ?? "standing",
+    status: [],
+    intent: { type: "idle" },
+    alerted: false,
+  };
+  const wingmanCoord = { q: start.q + 1, r: start.r };
+  const wingman: Unit = {
+    id: "FRIENDLY_1",
+    name: "Andersson",
+    side: "friendly",
+    role: "soldier",
+    element: "tat_1",
+    elementPosition: 1,
+    position: axialToMapPoint(wingmanCoord),
+    coord: wingmanCoord,
+    facing: leader.facing,
+    lookDirection: leader.lookDirection,
+    health: 100,
+    stamina: 100,
+    stress: 10,
+    posture: "standing",
+    status: [],
+    intent: { type: "idle" },
+    alerted: false,
+  };
+  return [leader, wingman];
 }
 
 function buildMap(seed: string, patches: Array<{ coord: HexCoord; terrain: TerrainType }>): GameMap {
@@ -1161,7 +1369,7 @@ function appendAndApply(session: Session, newEvents: DomainEvent[]): Session {
 }
 
 function applyEvent(world: WorldState, event: DomainEvent): WorldState {
-  const next = clone(world);
+  const next = mutableWorldForEvent(world);
   if (event.type === "time_advanced") {
     next.time = Number(event.payload.to);
   }
@@ -1258,6 +1466,18 @@ function applyEvent(world: WorldState, event: DomainEvent): WorldState {
         : clone((event.payload.targetPoint as MapPoint | undefined) ?? axialToMapPoint(event.payload.target as HexCoord)),
     };
   }
+  if (event.type === "group_halted" && next.activeFormation) {
+    const leader = maybeMutableUnit(next, String(event.payload.issuerId));
+    next.activeFormation = {
+      ...next.activeFormation,
+      orderKind: "formation",
+      phase: undefined,
+      target: clone(leader?.coord ?? next.activeFormation.target),
+      targetPoint: clone(leader?.position ?? next.activeFormation.targetPoint),
+      advanceTarget: undefined,
+      advanceTargetPoint: undefined,
+    };
+  }
   if (event.type === "order_delivery_resolved" && event.payload.status === "received") {
     const unit = maybeMutableUnit(next, String(event.payload.unitId));
     if (unit) {
@@ -1277,7 +1497,7 @@ function applyEvent(world: WorldState, event: DomainEvent): WorldState {
     unit.position = axialToMapPoint(unit.coord);
     unit.posture = "crouched";
   }
-  return refreshVisibilityMemory(indexWorld(next));
+  return refreshVisibilityMemory(next);
 }
 
 function buildEvent(session: Session, type: string, payload: Record<string, unknown>): DomainEvent {
@@ -2359,7 +2579,8 @@ function perceivedUnitFor(
   const visible = role === "observer" || unit.id === observer.id || visibleKeys.has(key);
   const rememberedAt = rememberedHexes[key];
   const latestReport = latestReportForUnit(session, unit.id);
-  const hasMemory = typeof rememberedAt === "number" && session.world.time - rememberedAt <= VISIBILITY_MEMORY_SECONDS;
+  const memoryWindow = visibilityMemorySeconds(session.world.difficulty);
+  const hasMemory = typeof rememberedAt === "number" && session.world.time - rememberedAt <= memoryWindow;
   const lastSeenAt = visible ? session.world.time : hasMemory ? rememberedAt : latestReport?.time;
   const age = typeof lastSeenAt === "number" ? round(session.world.time - lastSeenAt) : undefined;
   const source = visible ? "visual" : hasMemory ? "memory" : latestReport ? "report" : "roster";
@@ -2368,7 +2589,7 @@ function perceivedUnitFor(
       ? "high"
       : typeof age === "number" && age <= 5
         ? "medium"
-        : typeof age === "number" && age <= VISIBILITY_MEMORY_SECONDS
+        : typeof age === "number" && age <= memoryWindow
           ? "low"
           : latestReport
             ? latestReport.confidence
@@ -2929,10 +3150,13 @@ function rebuildPath(cameFrom: Map<string, string | undefined>, coords: Map<stri
 
 function visibleHexesFor(world: WorldState, unit: Unit): HexCoord[] {
   const radius = unit.posture === "prone" ? 4 : unit.posture === "crouched" ? 6 : 8;
-  return world.map.tiles
-    .filter((tile) => mapDistanceInHexes(unit.position, axialToMapPoint(tile.coord)) <= radius)
-    .filter((tile) => isDirectionVisibleFromPoint(unit.lookDirection, unit.position, axialToMapPoint(tile.coord)))
-    .map((tile) => tile.coord);
+  const center = mapPointToHex(unit.position);
+  return coordsWithinRadius(center, radius + 1)
+    .filter((coord) => inBounds(world.map, coord))
+    .filter((coord) => {
+      const point = axialToMapPoint(coord);
+      return mapDistanceInHexes(unit.position, point) <= radius && isDirectionVisibleFromPoint(unit.lookDirection, unit.position, point);
+    });
 }
 
 function refreshVisibilityMemory(world: WorldState): WorldState {
@@ -3245,6 +3469,21 @@ function indexWorld(world: WorldState): WorldState {
   return {
     ...world,
     map: indexMap(world.map),
+    units,
+    unitsById: Object.fromEntries(units.map((unit) => [unit.id, unit])),
+    visibilityMemory: clone(world.visibilityMemory ?? {}),
+  };
+}
+
+function mutableWorldForEvent(world: WorldState): WorldState {
+  const units = world.units.map((unit) => ({
+    ...clone(unit),
+    position: clone(unit.position ?? axialToMapPoint(unit.coord)),
+  }));
+  return {
+    ...world,
+    map: world.map.tilesByKey ? world.map : indexMap(world.map),
+    activeFormation: world.activeFormation ? clone(world.activeFormation) : undefined,
     units,
     unitsById: Object.fromEntries(units.map((unit) => [unit.id, unit])),
     visibilityMemory: clone(world.visibilityMemory ?? {}),

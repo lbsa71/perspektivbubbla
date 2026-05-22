@@ -8,7 +8,7 @@ The v0.1 goal is to prove one question:
 
 ## Current Status
 
-This repository has a runnable backend-authoritative prototype with a semi-functioning group commander interface. The current slice includes one-soldier movement/perception basics, simple opposing observers, and an 8-soldier group commander scenario with grpc, stf grpc, two tät, formation orders, `framåt`, `halt`, voice/gesture/radio propagation, true-coordinate movement, risk/effect zones, friendly blocking diagnostics, visibility memory, perceived/last-known status, heard report events, and a minimal event/AAR feed.
+This repository has a runnable backend-authoritative prototype with a scenario chooser. The current slice includes one-soldier movement/perception basics, simple opposing observers, a two-soldier risk-zone scenario, and an 8-soldier group commander scenario with grpc, stf grpc, two tät, formation orders, `framåt`, `halt`, voice/gesture/radio propagation, true-coordinate movement, risk/effect zones, friendly blocking diagnostics, visibility memory, perceived/last-known status, heard report events, selectable training/normal/realistic difficulty, and a minimal event/AAR feed.
 
 The former design-bible README has been split into focused planning artifacts under [docs/project](docs/project). The roadmap has been rearranged so the next phase is group-command fidelity rather than the older one-soldier/two-soldier sequence.
 
@@ -105,4 +105,4 @@ v0.1 is not a full combat simulator. It should avoid detailed weapons simulation
 
 ## Implementation Starting Point
 
-The architecture foundation is in place: WebSocket-backed session, event-sourced command handling, headless TypeScript simulation core, dumb browser client, deterministic tests, and a minimal event/AAR projection. The active implementation focus is now turning the phase 3/4 mechanics into scenario content: risk/effect-zone coaching, richer reports/status uncertainty, and then injury/buddy-aid scenarios.
+The architecture foundation is in place: WebSocket-backed session, event-sourced command handling, headless TypeScript simulation core, dumb browser client, deterministic tests, scenario metadata/start APIs, and a minimal event/AAR projection. The active implementation focus is now making the scenario content deeper: command delay/misunderstanding, injury/buddy-aid, and a more instructive AAR.

@@ -6,6 +6,7 @@ import {
   createPhaseOneSession,
   dispatchCommand,
   hexDistance,
+  listScenarioOptions,
   projectSession,
   replayEvents,
 } from "../src/index.ts";
@@ -20,6 +21,26 @@ test("phase one scenario is deterministic and uses a 100x100 map at 3m per hex",
   assert.deepEqual(a.world.map.tiles, b.world.map.tiles);
   assert.equal(a.world.units.filter((unit) => unit.side === "friendly").length, 1);
   assert.ok(a.world.units.some((unit) => unit.side === "opposing"));
+});
+
+test("scenario options expose troop, goal, and selectable difficulty-backed setup", () => {
+  const scenarios = listScenarioOptions();
+  assert.ok(scenarios.some((scenario) => scenario.id === "cover_to_cover" && scenario.troop.length === 1));
+  assert.ok(scenarios.some((scenario) => scenario.id === "leader_lost_picture" && scenario.troop.length === 8));
+
+  const session = createPhaseOneSession({
+    seed: "scenario-picker",
+    scenarioId: "risk_zone_blocking",
+    difficulty: "realistic",
+  });
+  const projection = projectSession(session);
+
+  assert.equal(projection.scenario.id, "risk_zone_blocking");
+  assert.equal(projection.scenario.difficulty, "realistic");
+  assert.equal(projection.perception.informationMode, "realistic");
+  assert.equal(projection.player.role, "leader");
+  assert.equal(session.world.units.filter((unit) => unit.side === "friendly").length, 2);
+  assert.deepEqual(projection.objective.target, { q: 24, r: 50 });
 });
 
 test("movement command creates backend-owned pathing and advances over simulated time", () => {
@@ -266,6 +287,10 @@ test("framåt arms embodied advance and halt stops every friendly unit", () => {
   });
 
   assert.ok(session.events.some((event) => event.type === "group_halted"));
+  assert.equal(session.world.activeFormation?.orderKind, "formation");
+  assert.equal(session.world.activeFormation?.phase, undefined);
+  assert.equal(session.world.activeFormation?.advanceTarget, undefined);
+  assert.deepEqual(session.world.activeFormation?.target, session.world.unitsById[leader.id].coord);
   assert.ok(session.world.units.filter((unit) => unit.side === "friendly").every((unit) => unit.intent.type === "idle"));
   assertUniqueFriendlyHexes(session);
   assertLeaderAndDeputyClose(session);
@@ -414,7 +439,7 @@ test("perception projection separates last-known status, reports, and heard even
   const perceivedLeader = projection.perception.lastKnownUnits.find((unit) => unit.unitId === "LEADER_1");
   const perceivedFlank = projection.perception.lastKnownUnits.find((unit) => unit.unitId === "FRIENDLY_4");
 
-  assert.equal(projection.perception.informationMode, "training");
+  assert.equal(projection.perception.informationMode, "normal");
   assert.equal(perceivedLeader?.confidence, "high");
   assert.ok(perceivedFlank);
   assert.notEqual(perceivedFlank?.source, "visual");

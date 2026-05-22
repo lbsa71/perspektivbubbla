@@ -1,321 +1,149 @@
-# Roadmap
-
-This roadmap reflects the prototype as of 2026-05-20. The original plan treated group command and communication as a later phase, but the working slice now already contains a tested group commander sandbox. Future phases should therefore harden the group-command model instead of returning to a strictly one-soldier progression.
-
-## Current Implementation Snapshot
-
-Implemented enough to treat as foundation:
-
-- Backend-authoritative session state with command handling in the TypeScript core.
-- Event-sourced session history and deterministic replay projection.
-- WebSocket command/projection channel.
-- Vite-served browser client that renders backend projections and sends commands.
-- 100x100 hex map at 3 meters per hex.
-- True map coordinates as the source of truth for unit position, direction, formation targeting, and movement; hexes are the pathing/rendering/data layer.
-- Full-grid map projection so non-visible cells remain clickable.
-- Visibility memory that fades recently seen cells before they return to unknown.
-- One-soldier movement, facing, look/sweep, posture, exposure, detection, and contact-pressure events.
-- Explicit opposing observer units with simple scan/alert/cover/orient behavior.
-- Group commander scenario with 8 friendly soldiers: grpc, stf grpc, and two tät.
-- Formation orders for line, file, column, wedge, dispersed, and regroup.
-- `framåt` and `halt` as explicit group movement commands.
-- Voice, gesture, and radio as communication modes for command propagation.
-- Soldier-level order delivery events, including relays through neighbours.
-- Two-phase forward movement: form up, then advance.
-- Hard invariant that no two soldiers occupy the same hex at the same time.
-- Collision-aware reformation around occupied friendly hexes.
-- Cohesion checks so soldiers wait when formation neighbours lag or separate.
-- Risk/effect-zone projection, friendly blocking diagnostics, and simple coverage checks for the two tät.
-- Perceived friendly status projection with confidence, age, last-known positions, heard events, and short status reports.
-- Minimal commander UI with hover panels, direction marker, formation diagnostics, effect-zone overlays, and perception/report hovers.
-- Tests for group order delivery, formation slots, no shared hexes, true-bearing movement, halt, no-halt turns, neighbour cohesion, risk zones, perception projections, replay, and WebSocket behavior.
-
-Still missing or incomplete:
-
-- Command delay, misunderstood orders, and stale-order handling are still simplified.
-- Shout/report/status uncertainty exists as a first projection slice, but not yet as a full information game.
-- Injury and buddy aid are not implemented.
-- AAR is still a minimal event summary rather than an instructive replay.
-- Scenario content is not yet JSON-authored.
-- Difficulty modes are not implemented.
-- The group movement model works, but still needs play-feel hardening around turns, command delay, terrain, and neighbour motivation.
-
-## Phase 1: Foundation and Group Commander Sandbox
-
-### Purpose
-
-Establish the final architectural shape and a playable command sandbox: backend-held truth, headless simulation, event log, dumb rendering client, one-soldier basics, and an initial group commander view.
-
-### Status
-
-Mostly implemented. Keep this phase open only for defects that threaten the foundation.
-
-### Included Features
-
-- Backend session with authoritative game state.
-- WebSocket command/projection channel.
-- Event-sourced session log.
-- Headless core for movement, facing, perception, opposing units, exposure, orders, and AAR inputs.
-- Dumb operational UI that renders projections and sends commands.
-- Scrollable/zoomable pointy-top hex map.
-- 100x100 map at 3 meters per hex.
-- Click-issued movement and orientation commands.
-- Backend-owned pathing and simulated realtime movement.
-- Terrain movement cost and cover/concealment values.
-- Opposing observer units, probabilistic detection, and abstract contact pressure.
-- Field of view and fading visibility memory.
-- Group commander scenario with 8 friendly soldiers.
-- Basic formation orders, `framåt`, `halt`, voice/gesture propagation, and regroup.
-
-### Exit Criteria
-
-- Client can be replaced without changing core game logic.
-- Backend command/state transitions are covered by tests.
-- Event log can rebuild the same final projection deterministically.
-- A commander can issue a formation, set direction, order `framåt`, and stop with `halt`.
-- No two soldiers can occupy the same hex.
-- A no-halt turn propagates to both tät and does not make soldiers walk backwards just to satisfy a stale formation center.
-
-## Phase 2: Group Command and Formation Fidelity
-
-### Purpose
-
-Turn the group commander sandbox into a believable, inspectable command-and-movement loop.
-
-### Features
-
-- Treat communication mode as a modifier only; voice/gesture/radio must never initiate action by themselves.
-- Keep the command grammar explicit:
-  - set communication mode
-  - set direction reference
-  - choose formation
-  - issue `framåt`
-  - issue `halt`
-- Add radio as a core communication mode with its own range/reliability assumptions.
-- Make every soldier repeat relevant commands so command propagation is visible and debuggable.
-- Model delayed, missed, repeated, and stale command reception.
-- Treat the grpc as a soldier first and a commander second:
-  - the player still click-moves the grpc through terrain
-  - `framåt` authorizes/sets the formation's advance intent and direction, but does not create a detached autopilot to the map edge
-  - soldiers maintain formation relative to the moving grpc and their neighbours
-  - if the grpc stops, the soldiers behind/alongside stop for the same cohesion reasons they would stop for any other neighbour
-- Keep grpc and stf grpc close while preserving two distinct tät chains.
-- Preserve fixed soldier positions inside each tät.
-- Improve motivated movement scoring:
-  - assigned formation slot
-  - embodied grpc position and movement intent
-  - current and future formation center
-  - advance direction
-  - neighbour distance
-  - neighbour forward/behind tolerance
-  - collision avoidance
-  - terrain cost
-- Allow soldiers to route around each other without violating the no-shared-hex invariant.
-- Avoid unnecessary backwards movement during turns and re-forming.
-- Add clearer diagnostics for stopped movement, missed orders, stale order ids, and cohesion waits.
-- Keep the left panel minimal; move detail to soldier, map-cell, Unit, Group, Goal, and Orders hovers.
+# Product Roadmap
 
-### Question
+This roadmap is now split by work type:
 
-Does issuing and observing group orders feel understandable, tactical, and corrigible?
+- **Product feature fix**: code/design work we can implement in the app today.
+- **Product validation/marketing activity**: user, buyer, content, and positioning work that should not be faked in code.
 
-### Exit Criteria
+## Current Slice
 
-- A player can form line, file, column, wedge, dispersed, and regroup without confusing side effects.
-- `framåt` sets an advance intent in the indicated true-map bearing, but the player still navigates the grpc through terrain with normal movement clicks.
-- `halt` immediately stops all friendlies that received the order.
-- Turning while moving updates both tät through propagation.
-- A soldier stops or slows when a neighbour, including the grpc, is too far behind, too far ahead, stopped, or has not received the same order.
-- The event log can explain why a soldier moved, waited, missed an order, or stopped.
-- Playtesters can predict what `gesture + direction + line + framåt` will do.
+The prototype already has a backend-held group commander simulation, selectable scenarios, training/normal/realistic difficulty, formation orders, `framåt`, `halt`, voice/gesture/radio propagation, true-coordinate movement, hex pathing, no-shared-hex movement, visibility memory, effect zones, perceived status, reports, and a tested WebSocket loop.
 
-## Phase 3: Facing, Risk Zones, and Mutual Interference
+The product gap is not "more mechanics"; it is a clearer playable training experience: onboarding, guided first run, visible learning objectives, debrief, scenario progression, and language that explains why this is useful.
 
-### Purpose
+## Phase 1: Playable Training Shell
 
-Make direction and spacing matter beyond formation neatness.
+**Type:** Product feature fix.
 
-### Features
+Goal: make the app feel like a game/training tool instead of a debug sandbox.
 
-- Show facing and look direction clearly.
-- Add abstract risk/effect zones.
-- Detect when a friendly soldier blocks another soldier's effect zone.
-- Mark blocking clearly in training mode and subtly in normal mode.
-- Log blocking and poor orientation in the AAR.
-- Integrate risk/effect zones with formation spacing and movement.
-- Add simple coverage checks for the two tät.
+Included:
 
-### Status
+- Intro screen with the promise, the current mission, and the basic command grammar.
+- Help screen with controls, order flow, difficulty behavior, and gesture training notes.
+- Scenario chooser that previews troop, goal, difficulty, and recommended first order.
+- Orientation mode that coaches the player through set direction, choose mode, choose formation, `framåt`, move the grpc, and `halt`.
+- Minimal always-visible left panel; deeper details remain in hovers and overlays.
+- Normal difficulty keeps gesture labels hidden; only training shows gesture text hints.
 
-First implementation slice is in place. The core projects friendly effect zones, detects blocker pairs, logs blocking/poor coverage into the event/AAR stream, nudges formation movement away from friendly effect zones, and the client renders visible training-mode overlays and hover diagnostics. Scenario B still needs authored setup and a stronger AAR lesson view.
+Exit criteria:
 
-### Scenario
+- A new player can start a scenario without developer narration.
+- The player knows that mode buttons only choose propagation mode.
+- The player knows that `framåt` starts the movement intent.
 
-Scenario B: Two Soldiers and Group Line - Risk Zone and Blocking.
+## Phase 2: Debrief and Learning Loop
 
-### Question
+**Type:** Product feature fix.
 
-Do positioning, facing, and neighbour placement become intuitively important?
+Goal: make each run teach something.
 
-### Exit Criteria
+Included:
 
-- Player notices when friendlies block each other.
-- AAR clearly shows when and why blocking happened.
-- Player improves placement and orientation on a second attempt.
+- A debrief panel with a simple score.
+- Metrics for time, distance to goal, order delivery, cohesion waits, blocked effect zones, coverage gaps, and contact pressure.
+- Learning points generated from the actual event stream.
+- A concise event log that still supports debugging.
+- Restart/change-scenario path from the debrief.
 
-## Phase 4: Perspective Bubble, Reports, and Status Uncertainty
+Exit criteria:
 
-### Purpose
+- The player can name what went well and what to improve.
+- A second run has an obvious reason to exist.
 
-Turn limited perception from a visibility effect into the central decision problem.
+## Phase 3: Scenario Progression and Content
 
-### Features
+**Type:** Product feature fix.
 
-- Perceived unit status separate from actual unit status.
-- Last-known friendly positions with confidence and age.
-- Sound events with approximate direction and clarity.
-- Shouts and short reports as information events.
-- Orders and reports that can be heard, misunderstood, delayed, missed, or relayed.
-- Limited status display; no perfect omniscient roster.
-- Training, normal, and realistic information modes.
-- UI affordances for checking uncertainty without exposing hidden truth.
+Goal: turn three scenario seeds into a coherent training ladder.
 
-### Status
+Included:
 
-First implementation slice is in place. Player projections now include perceived units with confidence/source/age, heard events with approximate direction and clarity, and short status reports generated from blocking and movement waits. The current UI still defaults to a training-style view; normal/realistic filtering needs to become selectable and stricter.
+- Scenario cards grouped by lesson: movement, spacing/risk, group command/perception.
+- Recommended starting command and lesson focus per scenario.
+- Difficulty-specific help text and scenario expectations.
+- Scenario completion/attempt state stored locally for the browser session.
+- Content moved toward data-backed definitions when the current TypeScript metadata becomes limiting.
 
-### Question
+Exit criteria:
 
-Does limited information feel interesting instead of merely frustrating?
+- The scenario chooser reads like a curriculum, not a list of test fixtures.
+- Training, normal, and realistic feel deliberately different.
 
-### Exit Criteria
+## Phase 4: Fidelity Hardening
 
-- Player understands why information is missing or stale.
-- Player starts actively checking, gathering, reporting, or following up.
-- AAR can compare actual state against perceived state at key moments.
+**Type:** Product feature fix.
 
-## Phase 5: Injury and Buddy Aid
+Goal: make the group-command model robust enough for repeated play.
 
-### Purpose
+Included:
 
-Introduce capacity loss, tempo loss, and follow-up pressure without becoming a medical simulator.
+- Stronger command delay, stale-order, and misunderstood-order states.
+- More terrain-aware formation movement.
+- More tests for 90-degree and 180-degree turns while moving.
+- Better waiting/stop explanations without revealing hidden truth outside training mode.
+- Injury and buddy-aid loop for the lost-picture scenario.
 
-### Features
+Exit criteria:
 
-- A soldier can become injured.
-- Injury is visible only to those who see, hear, or receive a report.
-- Another soldier can help.
-- Helping binds that soldier and changes movement tempo.
-- Moving an injured soldier affects group tempo and cohesion.
-- The group leader must remember, follow up, or explicitly delegate.
-- AAR shows injury time, perception time, reporting path, and follow-up time.
+- Long sessions do not produce surprising formation drift.
+- AAR can explain missed orders, stale orders, injury discovery, and recovery.
 
-### Scenario
+## Phase 5: Expert Review
 
-Scenario C: Group Leader - Injured Soldier and Lost Situation Picture.
+**Type:** Product validation/marketing activity.
 
-### Question
+Goal: find out whether the tactical model is credible enough.
 
-Does an injured soldier create useful cognitive load without overwhelming the prototype?
+Activities:
 
-### Exit Criteria
+- Put the prototype in front of infantry instructors, cadets, or people who have trained group command.
+- Ask them to critique terminology, formation behavior, order flow, and debrief relevance.
+- Capture the top five realism breaks and top five useful training moments.
+- Decide which realism complaints improve training value and which are distractions.
 
-- Player can lose or recover status awareness in a meaningful way.
-- AAR shows a clear learning point.
-- Player wants to replay to handle the injury better.
+Exit criteria:
 
-## Phase 6: v0.1 Scenario Package and Playtest Loop
+- At least two credible reviewers say the core training loop is worth refining.
+- The next code backlog is driven by observed training value, not developer guesswork.
 
-### Purpose
+## Phase 6: Buyer and Positioning Discovery
 
-Combine the mechanics into a testable proof of concept.
+**Type:** Product validation/marketing activity.
 
-### Contents
+Goal: find the million-dollar path, if one exists.
 
-- Scenario A: From Cover to Cover.
-- Scenario B: Risk Zone and Blocking.
-- Scenario C: Injured Soldier and Lost Situation Picture.
-- Two roles: soldier and group leader.
-- Three difficulty levels: training, normal, realistic.
-- JSON-authored scenario content.
-- Simple start screen.
-- AAR with replay and key learning points.
-- Regression test suite for each scenario's critical path.
+Activities:
 
-### Question
+- Interview potential buyers: defense education, cadet organizations, serious-game studios, tactical trainers, and adjacent civilian training markets.
+- Test positioning: "command under incomplete perception", "formation and spacing trainer", "after-action tactical decision game", and "low-cost field-drill rehearsal".
+- Identify procurement barriers, content requirements, security expectations, and price anchors.
+- Build a short demo script and one-page product brief.
 
-Does the concept work as an educational game?
+Exit criteria:
 
-### Exit Criteria
+- A specific buyer segment can name a budget, buyer, use case, and pilot path.
+- The product promise is sharper than "a cool tactical sim".
 
-- 5 test players can play without the developer beside them.
-- At least 3 of 5 want to play again.
+## Phase 7: Pilot Package
+
+**Type:** Mixed.
+
+Product feature fixes:
+
+- Package 5-7 polished scenarios.
+- Add stable scenario results and exportable AAR summaries.
+- Add instructor-facing observer mode.
+- Add deterministic replay links or files.
+
+Product validation/marketing activities:
+
+- Run a structured pilot with 5-10 users.
+- Measure replay intent, learning recall, confusion points, and instructor usefulness.
+- Convert pilot findings into a commercial roadmap.
+
+Exit criteria:
+
+- At least 3 of 5 test players want another run.
 - At least 3 of 5 can name one concrete learning point.
-- An experienced user judges the AAR as relevant.
-
-## Current Focus Backlog
-
-### Group Command
-
-- Persist and visualize command propagation per soldier.
-- Make order delay and missed relay visible in hovers/AAR.
-- Add command-id diagnostics to every movement wait/stop.
-- Split "set direction" from "advance" everywhere in UI and tests.
-- Add explicit delayed/misunderstood/stale order states beyond the current received/missed result.
-
-### Formation Movement
-
-- Tune motivated movement weights for turns, re-forming, and neighbour catch-up.
-- Add terrain-aware formation movement.
-- Expand tests for 90-degree and 180-degree moving turns.
-- Test each formation with both tät and grpc/stf grpc constraints.
-- Keep true map coordinates as source of truth and hexes as pathing/rendering.
-
-### UI and Feedback
-
-- Keep always-visible left-panel information minimal.
-- Move Unit, Group, Goal, Orders, soldier, and hex details into hovers.
-- Show direction reference as a dotted true-bearing line.
-- Show training-mode effect zones, blocking warnings, last-known confidence, and heard/report summaries without crowding the left panel.
-- Show why a soldier is waiting without revealing hidden world truth in normal mode.
-- Keep development diagnostics available through console logs and optional overlays.
-
-### Scenario and AAR
-
-- Move scenario definitions into JSON fixtures.
-- Add replayable AAR projections from the event log.
-- Add learning-point summaries for movement, orders, perception, and contact pressure.
-
-## Priority Cut
-
-### Must Have for v0.1
-
-- Hex map and terrain.
-- Soldier and group tokens.
-- Facing/look direction.
-- True-coordinate movement with hex pathing.
-- Perspective bubble and information age.
-- Cover/concealment and exposure.
-- Group orders, formations, `framåt`, and `halt`.
-- Voice/gesture/radio communication with relay/miss/delay.
-- Risk/effect zone and friendly blocking.
-- Injury and simplified buddy aid.
-- AAR comparing actual, perceived, and commanded state.
-
-### Should Have
-
-- Training/normal/realistic information modes.
-- Sound and shout clarity.
-- Last-known friendly confidence.
-- Formation diagnostics and replay overlays.
-- Scenario JSON validation.
-
-### Can Wait
-
-- Advanced enemy AI.
-- Detailed weapons or ballistics.
-- Detailed medical instruction.
-- Inventory.
-- Campaign.
-- Multiplayer.
-- Scenario editor.
+- An instructor or buyer asks what a pilot would cost.

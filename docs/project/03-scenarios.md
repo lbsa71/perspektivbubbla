@@ -1,5 +1,7 @@
 # Scenarios
 
+The prototype currently exposes these three scenario families through the in-app scenario chooser. The chooser shows the troop, goal, and difficulty before resetting the backend session.
+
 ## Scenario A: Soldier - From Cover to Cover
 
 ### Purpose
@@ -53,7 +55,7 @@ The first scenario family should support three contact frames:
 
 Failure should not always end the session. If a stealth objective fails because the player is detected, the scenario can transition into a new objective such as saving the situation. That objective can then succeed, fail, or transition into retreat. The AAR should explain the chain instead of only showing a binary win/loss.
 
-Scenario JSON should define core objectives and important static markers. Transitory objectives are implicit and arise from player choices and scenario state rather than being exhaustively authored as a state machine.
+Current implementation status: scenario metadata is defined in the TypeScript core and served through `/api/scenarios`. The next content step is moving the same definitions into JSON fixtures. Transitory objectives are implicit and arise from player choices and scenario state rather than being exhaustively authored as a state machine.
 
 ## Scenario B: Two Soldiers - Risk Zone and Blocking
 
@@ -138,7 +140,7 @@ Shows:
 - Each scenario should be short enough to replay immediately.
 - Each scenario should isolate one or two learning mechanics before combining them.
 - Every scenario must produce an AAR with at least three concrete observations.
-- Scenario content should be stored as JSON once implementation begins.
+- Scenario content should move from the current TypeScript metadata into JSON fixtures before the content set grows.
 - Scenarios should remain procedural and perception-focused, not detailed tactical doctrine.
 - Important markers and objectives should be static, while surrounding terrain can be generated deterministically.
 
@@ -146,4 +148,4 @@ Shows:
 
 Threats are explicit opposing units in world state. They have position, facing, posture, field of view, detection probability, and simple heuristics. In Phase 1 they can observe, become alerted, move into cover, orient toward contact, and create abstract return-fire/contact-pressure events.
 
-Scenario JSON should place important opposing-unit markers. Surrounding terrain can still be generated deterministically.
+Future scenario JSON should place important opposing-unit markers. Surrounding terrain can still be generated deterministically.

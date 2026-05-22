@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Perspektivbubbla - Gruppchef</title>
-    <script type="module" crossorigin src="/assets/index-BKIoQkeg.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-CL1kPasA.css">
+    <script type="module" crossorigin src="/assets/index-CCBmB5RH.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CnCzrqXx.css">
   </head>
   <body>
     <main class="shell">
@@ -15,6 +15,10 @@
           <p>Gruppchefens lägesbild</p>
         </div>
         <div class="status">
+          <button type="button" data-command="open-intro">Intro</button>
+          <button type="button" data-command="toggle-help">Hjälp</button>
+          <button type="button" data-command="toggle-orientation" aria-pressed="true">Orientering</button>
+          <button type="button" data-command="open-scenario">Scenario</button>
           <span id="connection">FRÅNKOPPLAD</span>
           <span id="time">t=0.0</span>
           <button
@@ -39,6 +43,7 @@
             <button id="info-group" class="info-word" type="button">Grupp</button>
             <button id="info-goal" class="info-word" type="button">Mål</button>
             <button id="info-orders" class="info-word" type="button">Order</button>
+            <button id="info-terrain" class="info-word" type="button">Terräng</button>
           </nav>
 
           <h2>Grupp</h2>
@@ -150,14 +155,21 @@
 
         <section class="map-wrap">
           <svg id="map" role="img" aria-label="hexkarta"></svg>
+          <div id="coach-panel" class="coach-panel" hidden></div>
           <div id="hex-tooltip" class="hex-tooltip" hidden></div>
         </section>
 
         <aside id="aar-panel" class="panel aar-panel" hidden>
+          <h2>Debrief</h2>
+          <div id="debrief"></div>
           <h2>Händelselogg</h2>
           <ol id="events"></ol>
         </aside>
       </section>
+
+      <div id="intro-modal" class="product-modal-layer" hidden></div>
+      <div id="help-modal" class="product-modal-layer" hidden></div>
+      <div id="scenario-chooser" class="scenario-chooser"></div>
     </main>
 
   </body>

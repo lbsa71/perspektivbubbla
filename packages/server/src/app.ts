@@ -9,8 +9,11 @@ import {
   advanceSession,
   createPhaseOneSession,
   dispatchCommand,
+  listScenarioOptions,
   projectSession,
+  type DifficultyLevel,
   type PlayerCommand,
+  type ScenarioId,
   type Session,
 } from "../../core/src/index.ts";
 
@@ -29,10 +32,16 @@ const TICK_SECONDS = 0.2;
 const CLIENT_DIR = fileURLToPath(new URL("../../client/public", import.meta.url));
 
 export function createAppServer(): AppServer {
-  let session = createPhaseOneSession({ seed: "phase-one", scenario: "group_commander" });
+  let session = createPhaseOneSession({ seed: "phase-one", scenarioId: "leader_lost_picture", difficulty: "training" });
   const sockets = new Set<SocketConnection>();
   const server = createServer((request, response) => {
-    void handleHttpRequest(request, response, session);
+    void handleHttpRequest(request, response, {
+      getSession: () => session,
+      setSession: (next) => {
+        session = next;
+        broadcast(sockets, session);
+      },
+    });
   });
 
   const interval = setInterval(() => {
@@ -120,10 +129,37 @@ function broadcast(sockets: Set<SocketConnection>, session: Session): void {
   }
 }
 
-async function handleHttpRequest(request: IncomingMessage, response: ServerResponse, session: Session): Promise<void> {
+type SessionController = {
+  getSession: () => Session;
+  setSession: (session: Session) => void;
+};
+
+async function handleHttpRequest(request: IncomingMessage, response: ServerResponse, controller: SessionController): Promise<void> {
   const url = request.url ?? "/";
+  if (url === "/api/scenarios") {
+    sendJson(response, {
+      scenarios: listScenarioOptions(),
+      difficulties: [
+        { id: "training", label: "Träning", description: "Visar riskzoner, ordermottagning, rapporter och tydlig osäkerhet." },
+        { id: "normal", label: "Normal", description: "Mindre hjälp, mer tonvikt på uppfattad lägesbild och rapporter." },
+        { id: "realistic", label: "Realistisk", description: "Minimala overlays och kortare minne av vad du inte längre ser." },
+      ],
+    });
+    return;
+  }
+
   if (url === "/api/session") {
-    sendJson(response, projectSession(session, "player"));
+    if (request.method === "POST") {
+      const body = (await readRequestBody(request)) as { scenarioId?: ScenarioId; difficulty?: DifficultyLevel; seed?: string } | undefined;
+      const scenarioId = body?.scenarioId ?? "leader_lost_picture";
+      const difficulty = body?.difficulty ?? "training";
+      const seed = body?.seed ?? `${scenarioId ?? "leader_lost_picture"}:${difficulty ?? "training"}`;
+      const next = createPhaseOneSession({ scenarioId, difficulty, seed });
+      controller.setSession(next);
+      sendJson(response, projectSession(next, "player"));
+      return;
+    }
+    sendJson(response, projectSession(controller.getSession(), "player"));
     return;
   }
 
@@ -136,6 +172,22 @@ async function handleHttpRequest(request: IncomingMessage, response: ServerRespo
     response.writeHead(404, { "content-type": "text/plain" });
     response.end("Not found");
   }
+}
+
+function readRequestBody(request: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    request.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    request.on("end", () => {
+      const text = Buffer.concat(chunks).toString("utf8").trim();
+      if (!text) {
+        resolve(undefined);
+        return;
+      }
+      resolve(safeJson(text));
+    });
+    request.on("error", () => resolve(undefined));
+  });
 }
 
 function sendJson(response: ServerResponse, value: unknown): void {
