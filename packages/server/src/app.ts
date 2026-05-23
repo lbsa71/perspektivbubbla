@@ -135,8 +135,9 @@ type SessionController = {
 };
 
 async function handleHttpRequest(request: IncomingMessage, response: ServerResponse, controller: SessionController): Promise<void> {
-  const url = request.url ?? "/";
-  if (url === "/api/scenarios") {
+  const requestUrl = new URL(request.url ?? "/", "http://localhost");
+  const pathname = requestUrl.pathname;
+  if (pathname === "/api/scenarios") {
     sendJson(response, {
       scenarios: listScenarioOptions(),
       difficulties: [
@@ -148,7 +149,7 @@ async function handleHttpRequest(request: IncomingMessage, response: ServerRespo
     return;
   }
 
-  if (url === "/api/session") {
+  if (pathname === "/api/session") {
     if (request.method === "POST") {
       const body = (await readRequestBody(request)) as { scenarioId?: ScenarioId; difficulty?: DifficultyLevel; seed?: string } | undefined;
       const scenarioId = body?.scenarioId ?? "leader_lost_picture";
@@ -163,7 +164,7 @@ async function handleHttpRequest(request: IncomingMessage, response: ServerRespo
     return;
   }
 
-  const filePath = url === "/" ? "index.html" : url.replace(/^\//, "");
+  const filePath = pathname === "/" || pathname.startsWith("/scenario/") ? "index.html" : pathname.replace(/^\//, "");
   try {
     const content = await readFile(join(CLIENT_DIR, filePath));
     response.writeHead(200, { "content-type": contentType(filePath) });

@@ -2,7 +2,12 @@ type Direction = "N" | "NE" | "SE" | "S" | "SW" | "NW";
 type Formation = "column" | "line" | "file" | "wedge" | "dispersed" | "regroup";
 type CommunicationMethod = "voice" | "gesture" | "radio";
 type DifficultyLevel = "training" | "normal" | "realistic";
-type ScenarioId = "cover_to_cover" | "risk_zone_blocking" | "leader_lost_picture";
+type ScenarioId =
+  | "cover_to_cover"
+  | "risk_zone_blocking"
+  | "leader_lost_picture"
+  | "river_bridge_crossing"
+  | "ditch_line_contact";
 
 type HexCoord = {
   q: number;
@@ -28,6 +33,18 @@ type HexTileProjection = {
   exposure?: number;
 };
 
+type UnitActivityProjection = {
+  state: "moving" | "waiting" | "blocked" | "holding" | "injured" | "idle";
+  target: HexCoord;
+  targetPoint?: MapPoint;
+  reason?: string;
+  relatedUnitId?: string;
+  orderId?: string;
+  progress?: number;
+  pathLength?: number;
+  updatedAt?: number;
+};
+
 type UnitProjection = {
   id: string;
   name: string;
@@ -40,9 +57,11 @@ type UnitProjection = {
   facing: Direction;
   lookDirection: Direction;
   posture: string;
+  health: number;
   intent: { type: string; target?: HexCoord; targetPoint?: MapPoint };
   status: string[];
   currentOrderId?: string;
+  activity?: UnitActivityProjection;
 };
 
 type EventProjection = {
@@ -282,6 +301,12 @@ type PanDragState = {
   startPan: { x: number; y: number };
 };
 
+type DirectScenarioRequest = {
+  scenarioId: ScenarioId;
+  difficulty?: DifficultyLevel;
+  autoStart: boolean;
+};
+
 const directions: Direction[] = ["N", "NE", "SE", "S", "SW", "NW"];
 const formations: Formation[] = ["line", "file", "column", "wedge", "dispersed", "regroup"];
 const communications: CommunicationMethod[] = ["voice", "gesture", "radio"];
@@ -310,16 +335,17 @@ const directionVectors: Record<Direction, HexCoord> = {
   NW: { q: -1, r: 0 },
 };
 
+const directScenarioRequest = readDirectScenarioRequest();
 const initialIntroVisible = shouldShowIntro();
 
 const state: ClientState = {
   projection: undefined,
   scenarios: [],
   difficulties: [],
-  selectedScenarioId: undefined,
-  selectedDifficulty: "training",
-  showScenarioChooser: !initialIntroVisible,
-  showIntro: initialIntroVisible,
+  selectedScenarioId: directScenarioRequest?.scenarioId,
+  selectedDifficulty: directScenarioRequest?.difficulty ?? "training",
+  showScenarioChooser: directScenarioRequest ? !directScenarioRequest.autoStart : !initialIntroVisible,
+  showIntro: directScenarioRequest ? false : initialIntroVisible,
   showHelp: false,
   orientationMode: true,
   startingScenario: false,
@@ -338,6 +364,7 @@ const state: ClientState = {
 };
 let panDrag: PanDragState | undefined;
 let mapRenderFrame: number | undefined;
+let directScenarioStartAttempted = false;
 
 void loadScenarios();
 connect();
@@ -357,6 +384,99 @@ function shouldShowIntro(): boolean {
   }
 }
 
+function readDirectScenarioRequest(): DirectScenarioRequest | undefined {
+  const params = new URLSearchParams(location.search);
+  const pathParts = location.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+  const isScenarioPath = normalizeUrlToken(pathParts[0]) === "scenario";
+  const scenarioValue = params.get("scenario") ?? params.get("s") ?? (isScenarioPath ? pathParts[1] : undefined);
+  const scenarioId = scenarioIdFromUrlToken(scenarioValue);
+  if (!scenarioId) return undefined;
+
+  const difficultyValue = params.get("difficulty") ?? params.get("d") ?? (isScenarioPath ? pathParts[2] : undefined);
+  const difficulty = difficultyFromUrlToken(difficultyValue);
+  const autoStartValue = params.get("autostart") ?? params.get("start");
+
+  return {
+    scenarioId,
+    difficulty,
+    autoStart: !isFalseUrlToken(autoStartValue),
+  };
+}
+
+function scenarioIdFromUrlToken(value: string | null | undefined): ScenarioId | undefined {
+  if (isScenarioId(value ?? undefined)) return value as ScenarioId;
+  const aliases: Record<string, ScenarioId> = {
+    cover: "cover_to_cover",
+    cover_to_cover: "cover_to_cover",
+    en_soldat: "cover_to_cover",
+    fran_skydd_till_skydd: "cover_to_cover",
+    skydd_till_skydd: "cover_to_cover",
+    risk: "risk_zone_blocking",
+    risk_zone: "risk_zone_blocking",
+    risk_zone_blocking: "risk_zone_blocking",
+    riskzon: "risk_zone_blocking",
+    riskzon_blockering: "risk_zone_blocking",
+    skadad: "leader_lost_picture",
+    skadad_soldat: "leader_lost_picture",
+    injured: "leader_lost_picture",
+    injured_soldier: "leader_lost_picture",
+    group: "leader_lost_picture",
+    group_commander: "leader_lost_picture",
+    gruppchef: "leader_lost_picture",
+    leader_lost_picture: "leader_lost_picture",
+    bro: "river_bridge_crossing",
+    broovergang: "river_bridge_crossing",
+    broövergång: "river_bridge_crossing",
+    river: "river_bridge_crossing",
+    river_bridge: "river_bridge_crossing",
+    river_bridge_crossing: "river_bridge_crossing",
+    dike: "ditch_line_contact",
+    dikeslinjen: "ditch_line_contact",
+    ditch_line: "ditch_line_contact",
+    ditch_line_contact: "ditch_line_contact",
+  };
+  return aliases[normalizeUrlToken(value)];
+}
+
+function difficultyFromUrlToken(value: string | null | undefined): DifficultyLevel | undefined {
+  if (isDifficulty(value ?? undefined)) return value as DifficultyLevel;
+  const aliases: Record<string, DifficultyLevel> = {
+    easy: "training",
+    e: "training",
+    training: "training",
+    traning: "training",
+    latt: "training",
+    normal: "normal",
+    medium: "normal",
+    n: "normal",
+    hard: "realistic",
+    h: "realistic",
+    realistic: "realistic",
+    realistisk: "realistic",
+    svar: "realistic",
+  };
+  return aliases[normalizeUrlToken(value)];
+}
+
+function normalizeUrlToken(value: string | null | undefined): string {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function isFalseUrlToken(value: string | null | undefined): boolean {
+  const token = normalizeUrlToken(value);
+  return token === "0" || token === "false" || token === "no" || token === "nej" || token === "off";
+}
+
+function hasPendingDirectScenarioStart(): boolean {
+  return Boolean(directScenarioRequest?.autoStart && !directScenarioStartAttempted);
+}
+
 function rememberIntroSeen(): void {
   try {
     localStorage.setItem("perspektivbubbla:intro-seen", "true");
@@ -366,8 +486,7 @@ function rememberIntroSeen(): void {
 }
 
 function connect() {
-  const protocol = location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${protocol}://${location.host}/ws`);
+  const socket = new WebSocket(websocketUrl());
   state.socket = socket;
   setConnection("ANSLUTER");
 
@@ -381,7 +500,7 @@ function connect() {
     if (message.type === "projection") {
       state.projection = message.projection;
       mergeEventHistory(message.projection.events);
-      if (!state.showScenarioChooser && !state.startingScenario) {
+      if (!state.showScenarioChooser && !state.startingScenario && !hasPendingDirectScenarioStart()) {
         state.selectedScenarioId = message.projection.scenario?.id ?? state.selectedScenarioId;
         state.selectedDifficulty = message.projection.scenario?.difficulty ?? state.selectedDifficulty;
       } else {
@@ -393,6 +512,17 @@ function connect() {
       render();
     }
   });
+}
+
+function websocketUrl(): string {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const host = location.port === "5173" ? devBackendHost() : location.host;
+  return `${protocol}//${host}/ws`;
+}
+
+function devBackendHost(): string {
+  const hostname = location.hostname === "localhost" || location.hostname === "::1" ? "127.0.0.1" : location.hostname;
+  return `${hostname}:5174`;
 }
 
 function mergeEventHistory(events: EventProjection[]): void {
@@ -416,10 +546,20 @@ async function loadScenarios(): Promise<void> {
     state.scenarios = payload.scenarios;
     state.difficulties = payload.difficulties;
     const currentScenarioId = state.projection?.scenario.id;
-    const selected = state.scenarios.find((scenario) => scenario.id === currentScenarioId) ?? state.scenarios[0];
+    const directScenario = directScenarioRequest
+      ? state.scenarios.find((scenario) => scenario.id === directScenarioRequest.scenarioId)
+      : undefined;
+    const selected = directScenario ?? state.scenarios.find((scenario) => scenario.id === currentScenarioId) ?? state.scenarios[0];
     state.selectedScenarioId = selected?.id;
-    state.selectedDifficulty = state.projection?.scenario.difficulty ?? selected?.defaultDifficulty ?? "training";
+    state.selectedDifficulty =
+      directScenarioRequest?.difficulty ?? state.projection?.scenario.difficulty ?? selected?.defaultDifficulty ?? "training";
     renderScenarioChooser();
+    if (directScenarioRequest?.autoStart && !directScenarioStartAttempted && directScenario) {
+      directScenarioStartAttempted = true;
+      state.showIntro = false;
+      state.showScenarioChooser = false;
+      await startSelectedScenario("direct-link");
+    }
   } catch (error) {
     console.warn("[scenario] failed to load scenario list", error);
   }
@@ -485,7 +625,7 @@ function bindControls() {
     map.addEventListener("pointerdown", handleMapPointerDown);
     map.addEventListener("pointermove", handleMapPointerMove);
     map.addEventListener("pointerup", handleMapPointerEnd);
-    map.addEventListener("pointerup", handleMapHexPointerUp);
+    map.addEventListener("click", handleMapHexClick);
     map.addEventListener("pointercancel", handleMapPointerEnd);
     map.addEventListener("lostpointercapture", handleMapPointerEnd);
     map.addEventListener("wheel", handleMapWheel, { passive: false });
@@ -685,19 +825,26 @@ function handleMapPointerEnd(event: PointerEvent): void {
   finishMapPan(event);
 }
 
-function handleMapHexPointerUp(event: PointerEvent): void {
+function handleMapHexClick(event: MouseEvent): void {
   if (event.button !== 0 || panDrag) return;
   const projection = state.projection;
   if (!projection) return;
 
-  const targetElement = hexElementFromPoint(event);
-  if (!targetElement) return;
-
-  const target = coordFromDataset(targetElement);
-  if (!isValidCoord(target)) {
-    console.warn("[hex-click] failed", { reason: "invalid_hex_dataset", target });
+  const resolvedTarget = hexCoordFromPointerEvent(event, projection);
+  if (!resolvedTarget) {
+    console.warn("[hex-click] failed", { reason: "outside_grid", clientX: event.clientX, clientY: event.clientY });
     return;
   }
+
+  const { coord: target, source } = resolvedTarget;
+  if (!isValidCoord(target)) {
+    console.warn("[hex-click] failed", { reason: "invalid_hex_coord", target, source });
+    return;
+  }
+  if (source === "geometry") {
+    console.info("[hex-click] resolved by geometry", { target });
+  }
+  console.log("[hex-click] accepted", { target, source });
 
   if (projection.player.role === "leader" && (!isEmbodiedAdvanceActive(projection) || event.shiftKey)) {
     const result = setDirectionCue(target, projection);
@@ -720,7 +867,23 @@ function handleMapHexPointerUp(event: PointerEvent): void {
   });
 }
 
-function hexElementFromPoint(event: PointerEvent): SVGElement | undefined {
+function hexCoordFromPointerEvent(event: MouseEvent, projection: Projection): { coord: HexCoord; source: "element" | "geometry" } | undefined {
+  const targetElement = hexElementFromPoint(event);
+  if (targetElement) {
+    const coord = coordFromDataset(targetElement);
+    if (isValidCoord(coord) && tileAt(projection, coord)) {
+      return { coord, source: "element" };
+    }
+  }
+
+  const point = svgPointFromPointerEvent(event);
+  if (!point) return undefined;
+  const coord = pixelToHex(point, baseHexSize * state.zoom);
+  if (!tileAt(projection, coord)) return undefined;
+  return { coord, source: "geometry" };
+}
+
+function hexElementFromPoint(event: MouseEvent): SVGElement | undefined {
   const directTarget = event.target instanceof Element ? event.target.closest(".hex, .objective-hitbox") : undefined;
   if (directTarget instanceof SVGElement) {
     return directTarget;
@@ -729,6 +892,20 @@ function hexElementFromPoint(event: PointerEvent): SVGElement | undefined {
   const hitTarget = document.elementFromPoint(event.clientX, event.clientY);
   const hexTarget = hitTarget instanceof Element ? hitTarget.closest(".hex, .objective-hitbox") : undefined;
   return hexTarget instanceof SVGElement ? hexTarget : undefined;
+}
+
+function svgPointFromPointerEvent(event: MouseEvent): { x: number; y: number } | undefined {
+  const svg = document.querySelector("#map");
+  if (!(svg instanceof SVGSVGElement)) return undefined;
+  const rect = svg.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return undefined;
+  const viewBox = svg.viewBox.baseVal;
+  const width = viewBox.width || svg.clientWidth || rect.width;
+  const height = viewBox.height || svg.clientHeight || rect.height;
+  return {
+    x: viewBox.x + ((event.clientX - rect.left) / rect.width) * width,
+    y: viewBox.y + ((event.clientY - rect.top) / rect.height) * height,
+  };
 }
 
 function finishMapPan(event: PointerEvent): void {
@@ -1189,6 +1366,7 @@ function renderScenarioChooser(): void {
       </button>`,
     )
     .join("");
+  const directLink = directScenarioHref(selectedScenario.id, activeDifficulty);
 
   chooser.innerHTML = `
     <div class="scenario-modal" role="dialog" aria-modal="true" aria-labelledby="scenario-title">
@@ -1252,14 +1430,17 @@ function renderScenarioChooser(): void {
           <span class="scenario-actions-label">Svårighet</span>
           <div class="difficulty-grid">${difficultyCards}</div>
         </div>
-        <button type="button" data-command="start-scenario" ${state.startingScenario ? "disabled" : ""}>
-          ${state.startingScenario ? "Startar..." : "Starta scenario"}
-        </button>
+        <div class="scenario-start-actions">
+          <a class="scenario-direct-link" href="${escapeAttribute(directLink)}">Direktlänk</a>
+          <button type="button" data-command="start-scenario" ${state.startingScenario ? "disabled" : ""}>
+            ${state.startingScenario ? "Startar..." : "Starta scenario"}
+          </button>
+        </div>
       </div>
     </div>`;
 }
 
-async function startSelectedScenario(): Promise<void> {
+async function startSelectedScenario(source = "picker"): Promise<void> {
   if (!state.selectedScenarioId || state.startingScenario) return;
   state.startingScenario = true;
   renderScenarioChooser();
@@ -1267,6 +1448,7 @@ async function startSelectedScenario(): Promise<void> {
     console.info("[scenario] start requested", {
       scenarioId: state.selectedScenarioId,
       difficulty: state.selectedDifficulty,
+      source,
     });
     const response = await fetch("/api/session", {
       method: "POST",
@@ -1298,6 +1480,7 @@ async function startSelectedScenario(): Promise<void> {
       scenarioId: projection.scenario.id,
       difficulty: projection.scenario.difficulty,
       units: projection.units.length,
+      source,
     });
   } catch (error) {
     console.warn("[scenario] failed to start scenario", error);
@@ -1333,8 +1516,10 @@ function renderGroup(projection: Projection): void {
   const rows = friendlies
     .map((unit) => {
       const details = unitDetails(unit, projection);
-      return `<li class="roster-item" tabindex="0" title="${escapeAttribute(details)}" data-tooltip="${escapeAttribute(details)}">
+      const activity = activitySummary(unit);
+      return `<li class="roster-item roster-${activityTone(unit)}" tabindex="0" title="${escapeAttribute(details)}" data-tooltip="${escapeAttribute(details)}">
         <span class="callsign">${escapeHtml(unit.name)}</span>
+        <span class="roster-status">${escapeHtml(activity)}</span>
       </li>`;
     })
     .join("");
@@ -1455,11 +1640,19 @@ function renderMap(projection: Projection): void {
       const end = { x: point.x + vector.x, y: point.y + vector.y };
       const details = unitDetails(unit, projection);
       const blocked = projection.risk.blocking.some((warning) => warning.unitId === unit.id || warning.blockingUnitId === unit.id);
-      return `<g class="unit-marker ${blocked ? "unit-risk" : ""}">
+      const wounded = unit.posture === "injured" || unit.status.includes("injured");
+      const tone = activityTone(unit);
+      const status = shortActivity(unit);
+      const statusMarkup =
+        status && unit.side === "friendly"
+          ? `<text class="unit-status-label status-${tone}" x="${point.x + size * 0.8}" y="${point.y + size * 0.65}">${escapeHtml(status)}</text>`
+          : "";
+      return `<g class="unit-marker ${blocked ? "unit-risk" : ""} unit-${tone} ${wounded ? "unit-wounded" : ""}">
         <title>${escapeHtml(details)}</title>
         <circle class="unit-${unit.side} unit-${unit.role}" cx="${point.x}" cy="${point.y}" r="${size * 0.55}"></circle>
         <line class="facing" x1="${point.x}" y1="${point.y}" x2="${end.x}" y2="${end.y}"></line>
         <text class="unit-label" x="${point.x + size * 0.8}" y="${point.y - size * 0.7}">${escapeHtml(unitLabel(unit))}</text>
+        ${statusMarkup}
       </g>`;
     })
     .join("");
@@ -1497,11 +1690,13 @@ function renderTerrainIcon(tile: HexTileProjection, size: number, tilesByKey: Ma
       ? ` style="--memory-opacity: ${tile.memoryOpacity}"`
       : "";
 
-  if (tile.terrain === "road" || tile.terrain === "ditch" || tile.terrain === "wall") {
+  if (tile.terrain === "road" || tile.terrain === "bridge" || tile.terrain === "ditch" || tile.terrain === "wall") {
     const rotation = terrainAxisAngle(tile, tilesByKey);
     const icon =
       tile.terrain === "road"
         ? `<path d="M -6 0 L 6 0"></path><path class="terrain-icon-detail" d="M -4 0 L -2 0 M 1 0 L 3 0"></path>`
+        : tile.terrain === "bridge"
+          ? `<path d="M -6 0 L 6 0"></path><path class="terrain-icon-detail" d="M -5 -3 L -5 3 M -2 -3 L -2 3 M 1 -3 L 1 3 M 4 -3 L 4 3"></path>`
         : tile.terrain === "ditch"
           ? `<path d="M -6 -2 C -2 1 2 -3 6 0"></path><path d="M -6 3 C -2 5 2 1 6 4"></path>`
           : `<rect x="-6" y="-2.5" width="4" height="3"></rect><rect x="-1.5" y="-2.5" width="3.5" height="3"></rect><rect x="2.5" y="-2.5" width="3.5" height="3"></rect><rect x="-3.8" y="1" width="4" height="3"></rect><rect x=".7" y="1" width="4" height="3"></rect>`;
@@ -1511,6 +1706,8 @@ function renderTerrainIcon(tile: HexTileProjection, size: number, tilesByKey: Ma
   const icon =
     tile.terrain === "forest"
       ? `<path d="M -5 5 L -2 -4 L 1 5 Z"></path><path d="M 1 5 L 4 -5 L 7 5 Z"></path><path class="terrain-icon-detail" d="M -2 5 L -2 7 M 4 5 L 4 7"></path>`
+      : tile.terrain === "water"
+        ? `<path d="M -6 -2 C -3 -4 -1 0 2 -2 C 4 -3 5 -2 6 -1"></path><path d="M -6 3 C -3 1 -1 5 2 3 C 4 2 5 3 6 4"></path>`
       : tile.terrain === "grass"
         ? `<path d="M -5 5 C -5 1 -4 -2 -1 -5"></path><path d="M 0 5 C 0 1 1 -2 4 -5"></path><path d="M 5 5 C 4 2 3 0 1 -2"></path>`
         : tile.terrain === "field"
@@ -1540,7 +1737,10 @@ function terrainAxisAngle(tile: HexTileProjection, tilesByKey: Map<string, HexTi
 
 function matchingTerrainNeighbour(tile: HexTileProjection, direction: Direction, tilesByKey: Map<string, HexTileProjection>): number {
   const neighbour = tilesByKey.get(coordKey(addCoord(tile.coord, directionVectors[direction])));
-  return neighbour && neighbour.visibility !== "unknown" && neighbour.terrain === tile.terrain ? 1 : 0;
+  if (!neighbour || neighbour.visibility === "unknown") return 0;
+  const ownGroup = tile.terrain === "bridge" ? "road" : tile.terrain;
+  const neighbourGroup = neighbour.terrain === "bridge" ? "road" : neighbour.terrain;
+  return neighbourGroup === ownGroup ? 1 : 0;
 }
 
 function renderEffectZones(projection: Projection, size: number): string {
@@ -1774,6 +1974,8 @@ function displayTerrain(terrain: string): string {
     ditch: "Dike",
     wall: "Stenmur",
     road: "Väg",
+    water: "Vatten",
+    bridge: "Bro",
     unknown: "Okänt",
   };
   return labels[terrain] ?? terrain;
@@ -1785,6 +1987,8 @@ function terrainLegendDetails(): string {
     "Skog: två små träd, blockerar sikt och ger skyl.",
     "Högt gräs: strån, ger skyl men lite skydd.",
     "Dike: blå dubbellinje, ger skydd och skyl.",
+    "Vatten: vågor, stoppar rörelse.",
+    "Bro: spänger över vatten, snabb men exponerad.",
     "Stenmur: små block, mycket skydd och blockerar sikt.",
     "Väg: ljus linje, snabb men exponerad.",
     "Öppen mark: diskreta prickar, lätt att röra sig över men exponerad.",
@@ -1845,6 +2049,7 @@ function goalDetails(projection: Projection): string {
     objectiveTitle(projection.objective.title),
     `målhex: ${projection.objective.target.q},${projection.objective.target.r}`,
     `status: ${displayObjectiveStatus(projection.objective.status)}`,
+    objectiveCriteria(projection),
     objectiveDescription(projection.objective.description),
   ].join("\n");
 }
@@ -1867,10 +2072,15 @@ function orderDetails(projection: Projection): string {
         event.type === "friendly_effect_blocked" ||
         event.type === "tat_coverage_gap" ||
         event.type === "status_report_emitted" ||
+        event.type === "contact_pressure_emitted" ||
+        event.type === "incoming_fire_resolved" ||
+        event.type === "unit_wounded" ||
+        event.type === "objective_succeeded" ||
+        event.type === "objective_failed" ||
         event.type === "command_accepted" ||
         event.type === "command_rejected",
     )
-    .slice(-8)
+    .slice(-12)
     .reverse()
     .map(formatOrderEvent)
     .join("\n");
@@ -1916,6 +2126,21 @@ function formatOrderEvent(event: EventProjection): string {
   if (event.type === "status_report_emitted") {
     return `${event.time.toFixed(1)} ${displayUnitId(event.payload?.sourceUnitId)} rapporterar: ${event.payload?.message ?? ""}`;
   }
+  if (event.type === "contact_pressure_emitted") {
+    return `${event.time.toFixed(1)} kontakt från ${displayUnitId(event.payload?.unitId)} mot ${displayUnitId(event.payload?.targetId)}`;
+  }
+  if (event.type === "incoming_fire_resolved") {
+    return `${event.time.toFixed(1)} eld mot ${displayUnitId(event.payload?.targetId)} (${event.payload?.roll ?? "?"}/${event.payload?.probability ?? "?"})`;
+  }
+  if (event.type === "unit_wounded") {
+    return `${event.time.toFixed(1)} ${displayUnitId(event.payload?.unitId)} skadad`;
+  }
+  if (event.type === "objective_succeeded") {
+    return `${event.time.toFixed(1)} mål uppnått`;
+  }
+  if (event.type === "objective_failed") {
+    return `${event.time.toFixed(1)} mål misslyckat ${displayReason(event.payload?.reason)}`;
+  }
   const command = event.payload?.command;
   const detail = command?.target
     ? ` ${command.target.q},${command.target.r}`
@@ -1930,10 +2155,8 @@ function formatOrderEvent(event: EventProjection): string {
 }
 
 function unitDetails(unit: UnitProjection, projection: Projection): string {
-  const target =
-    unit.intent.type === "moving" && unit.intent.target
-      ? `${unit.intent.target.q},${unit.intent.target.r}`
-      : `${unit.coord.q},${unit.coord.r}`;
+  const activity = normalizedActivity(unit);
+  const target = `${activity.target.q},${activity.target.r}`;
   const activeFormation = projection.activeFormation ? displayFormationState(projection.activeFormation) : "ingen";
   const directionCue = state.selectedDirection
     ? `${state.selectedDirection}${state.directionCue ? ` via ${state.directionCue.q},${state.directionCue.r}` : ""}`
@@ -1961,8 +2184,13 @@ function unitDetails(unit: UnitProjection, projection: Projection): string {
       : "lägesbild: okänd",
     perceived?.perceivedCoord ? `uppfattad hex: ${perceived.perceivedCoord.q},${perceived.perceivedCoord.r}` : "uppfattad hex: okänd",
     `uppfattad status: ${displayPerceivedStatus(perceived?.perceivedStatus)}`,
+    `status: ${activitySummary(unit)}`,
     `avsikt: ${displayIntent(unit.intent.type)}`,
     `mål: ${target}`,
+    `varför stilla: ${stillReason(unit)}`,
+    `väg kvar: ${typeof activity.pathLength === "number" ? `${activity.pathLength} hex` : "-"}`,
+    `framsteg i nästa hex: ${typeof activity.progress === "number" ? activity.progress : "-"}`,
+    `hälsa: ${Math.round(unit.health)}`,
     `ställning: ${displayPosture(unit.posture)}`,
     `riktning/blick: ${unit.facing}/${unit.lookDirection}`,
     `effektzon: ${effectStatus}`,
@@ -1972,6 +2200,73 @@ function unitDetails(unit: UnitProjection, projection: Projection): string {
     `riktning: ${directionCue}`,
     `målhex: ${projection.objective.target.q},${projection.objective.target.r}`,
   ].join("\n");
+}
+
+function normalizedActivity(unit: UnitProjection): UnitActivityProjection {
+  if (unit.activity) return unit.activity;
+  if (unit.intent.type === "moving" && unit.intent.target) {
+    return {
+      state: "moving",
+      target: unit.intent.target,
+      targetPoint: unit.intent.targetPoint,
+      reason: "moving_to_target",
+    };
+  }
+  return {
+    state: unit.posture === "injured" || unit.status.includes("injured") ? "injured" : "idle",
+    target: unit.coord,
+    reason: unit.posture === "injured" || unit.status.includes("injured") ? "injured" : "no_order",
+  };
+}
+
+function activitySummary(unit: UnitProjection): string {
+  const activity = normalizedActivity(unit);
+  const target = `${activity.target.q},${activity.target.r}`;
+  const reason = displayReason(activity.reason);
+  const related = activity.relatedUnitId ? ` (${displayUnitId(activity.relatedUnitId)})` : "";
+  if (activity.state === "moving") return `rör sig -> ${target}`;
+  if (activity.state === "waiting") return `väntar: ${reason}${related} -> ${target}`;
+  if (activity.state === "blocked") return `blockerad: ${reason} -> ${target}`;
+  if (activity.state === "injured") return "skadad";
+  if (activity.state === "holding") return `håller: ${reason || target}`;
+  return `stilla: ${reason || target}`;
+}
+
+function shortActivity(unit: UnitProjection): string {
+  const activity = normalizedActivity(unit);
+  if (activity.state === "moving") return "→";
+  if (activity.state === "waiting") return "väntar";
+  if (activity.state === "blocked") return "block";
+  if (activity.state === "injured") return "skadad";
+  if (activity.state === "holding" && activity.reason !== "no_order") return "håller";
+  return "";
+}
+
+function activityTone(unit: UnitProjection): "ready" | "wait" | "warning" {
+  const activity = normalizedActivity(unit);
+  if (activity.state === "blocked" || activity.state === "injured") return "warning";
+  if (activity.state === "waiting" || activity.state === "holding") return "wait";
+  return "ready";
+}
+
+function stillReason(unit: UnitProjection): string {
+  const activity = normalizedActivity(unit);
+  if (activity.state === "moving") return "-";
+  const reason = displayReason(activity.reason);
+  const related = activity.relatedUnitId ? ` (${displayUnitId(activity.relatedUnitId)})` : "";
+  return `${reason || displayActivityState(activity.state)}${related}`;
+}
+
+function displayActivityState(state: UnitActivityProjection["state"]): string {
+  const labels: Record<UnitActivityProjection["state"], string> = {
+    moving: "rör sig",
+    waiting: "väntar",
+    blocked: "blockerad",
+    holding: "håller position",
+    injured: "skadad",
+    idle: "stilla",
+  };
+  return labels[state] ?? state;
 }
 
 function displayFormationState(formation: NonNullable<Projection["activeFormation"]>): string {
@@ -2019,6 +2314,25 @@ function displayObjectiveStatus(status: string): string {
   return labels[status] ?? status;
 }
 
+function objectiveCriteria(projection: Projection): string {
+  if (projection.scenario.id === "cover_to_cover") {
+    return "krav: soldaten inom 1 hex från målhexen";
+  }
+  if (projection.scenario.id === "risk_zone_blocking") {
+    return "krav: båda stridsdugliga soldater inom 2 hex från målhexen";
+  }
+  const friendlies = projection.units.filter((unit) => unit.side === "friendly");
+  const effective = friendlies.filter((unit) => unit.posture !== "injured" && !unit.status.includes("injured"));
+  if (effective.length === 0) {
+    return "krav: ingen stridsduglig soldat kvar";
+  }
+  const arrived = effective.filter((unit) => hexDistance(unit.coord, projection.objective.target) <= 3).length;
+  const required = Math.max(1, Math.ceil(effective.length * 0.75));
+  const leader = effective.find((unit) => unit.role === "leader");
+  const leaderArrived = leader ? hexDistance(leader.coord, projection.objective.target) <= 3 : false;
+  return `krav: grpc + ${required}/${effective.length} stridsdugliga inom 3 hex (nu ${leaderArrived ? "grpc framme" : "grpc ej framme"}, ${arrived}/${effective.length})`;
+}
+
 function displayReceptionStatus(status: string | undefined): string {
   const labels: Record<string, string> = {
     received: "mottog",
@@ -2041,14 +2355,37 @@ function displayReason(reason: string | undefined): string {
     halt_order: "haltorder",
     posture_change: "ändrad kroppsställning",
     formation_motivation: "grupperingsrörelse",
+    moving_to_order_target: "rör sig mot ordermål",
+    moving_to_selected_hex: "rör sig mot vald hex",
+    moving_to_target: "rör sig mot mål",
     blocked_by_unit: "blockerad av enhet",
     cohesion_wait: "väntar på sammanhållning",
     neighbour_too_far: "granne för långt bort",
+    neighbour_lagging: "granne för långt bak",
+    neighbour_separated: "granne saknas i orderkedjan",
+    occupied: "nästa hex upptagen",
     no_path: "ingen framkomlig väg",
+    blocked: "blockerad",
+    waiting: "väntar",
+    embodied_leader_follow_no_path: "ingen väg till gruppchefens nya läge",
+    no_candidate: "ingen bättre hex hittad",
+    hold_position_best_candidate: "bästa valet är att hålla plats",
+    waiting_for_formation: "väntar på att gruppen formerar",
+    formation_position_holding: "håller plats i formationen",
+    leader_holding: "gruppchefen står still",
+    movement_completed: "framkommen och håller plats",
+    no_current_order: "saknar aktuell order",
+    no_order: "ingen aktiv order",
+    injured: "skadad",
     poor_orientation: "fel blickriktning",
     blocked_effect_zone: "effektzon blockerad",
     no_members: "saknar soldater",
     friendly_in_effect_zone: "kamrat i effektzon",
+    direct_fire: "direkt eld",
+    group_reached_objective: "gruppen nådde målområdet",
+    team_reached_objective: "paret nådde målområdet",
+    player_reached_objective: "soldaten nådde målet",
+    no_effective_friendlies: "ingen stridsduglig kvar",
   };
   return labels[reason] ?? reason.replaceAll("_", " ");
 }
@@ -2186,6 +2523,21 @@ function formatTimelineEvent(event: EventProjection): string {
   if (event.type === "status_report_emitted") {
     return `${displayUnitId(event.payload?.sourceUnitId)} rapporterar: ${event.payload?.message ?? ""}`;
   }
+  if (event.type === "contact_pressure_emitted") {
+    return `kontakt från ${displayUnitId(event.payload?.unitId)} mot ${displayUnitId(event.payload?.targetId)}`;
+  }
+  if (event.type === "incoming_fire_resolved") {
+    return `eld mot ${displayUnitId(event.payload?.targetId)} (${event.payload?.roll ?? "?"}/${event.payload?.probability ?? "?"})`;
+  }
+  if (event.type === "unit_wounded") {
+    return `${displayUnitId(event.payload?.unitId)} skadad`;
+  }
+  if (event.type === "objective_succeeded") {
+    return `mål uppnått: ${displayReason(event.payload?.reason)}`;
+  }
+  if (event.type === "objective_failed") {
+    return `mål misslyckat: ${displayReason(event.payload?.reason)}`;
+  }
   if (event.type === "command_accepted" || event.type === "command_rejected") {
     return displayCommandType(event.type);
   }
@@ -2203,13 +2555,15 @@ function renderObjectiveMarker(projection: Projection, size: number): string {
   const player = unitToPixel(projection.player, size);
   const radius = size * 0.95;
   const clickableRadius = size * 1.25;
-  return `<g>
+  const status = projection.objective.status;
+  const statusLabel = status === "succeeded" ? "KLART" : status === "failed" ? "MISSLYCKAT" : "MÅL";
+  return `<g class="objective objective-${status}">
     <line class="objective-line" x1="${player.x}" y1="${player.y}" x2="${target.x}" y2="${target.y}"></line>
     <circle class="objective-marker" cx="${target.x}" cy="${target.y}" r="${radius}"></circle>
     <line class="objective-marker" x1="${target.x - radius}" y1="${target.y}" x2="${target.x + radius}" y2="${target.y}"></line>
     <line class="objective-marker" x1="${target.x}" y1="${target.y - radius}" x2="${target.x}" y2="${target.y + radius}"></line>
     <circle class="objective-hitbox" cx="${target.x}" cy="${target.y}" r="${clickableRadius}" data-q="${projection.objective.target.q}" data-r="${projection.objective.target.r}"></circle>
-    <text class="objective-label" x="${target.x + size * 1.4}" y="${target.y - size * 1.2}">MÅL ${projection.objective.target.q},${projection.objective.target.r}</text>
+    <text class="objective-label" x="${target.x + size * 1.4}" y="${target.y - size * 1.2}">${statusLabel} ${projection.objective.target.q},${projection.objective.target.r}</text>
   </g>`;
 }
 
@@ -2253,7 +2607,13 @@ function isCommunication(value: string | undefined): value is CommunicationMetho
 }
 
 function isScenarioId(value: string | undefined): value is ScenarioId {
-  return value === "cover_to_cover" || value === "risk_zone_blocking" || value === "leader_lost_picture";
+  return (
+    value === "cover_to_cover" ||
+    value === "risk_zone_blocking" ||
+    value === "leader_lost_picture" ||
+    value === "river_bridge_crossing" ||
+    value === "ditch_line_contact"
+  );
 }
 
 function isDifficulty(value: string | undefined): value is DifficultyLevel {
@@ -2321,6 +2681,8 @@ function scenarioLesson(id: ScenarioId): string {
     cover_to_cover: "Enskild rörelse, sikt, skydd och exponering.",
     risk_zone_blocking: "Två soldater, effektzoner och hur kamrater blockerar varandra.",
     leader_lost_picture: "Gruppchef: riktning, orderkedja, tät, sammanhållning och tappad lägesbild.",
+    river_bridge_crossing: "Flaskhalsar, broövergång och opasserbar terräng.",
+    ditch_line_contact: "Sammanhängande diken, skyddad motståndare och gruppsamordning.",
   };
   return lessons[id];
 }
@@ -2340,6 +2702,31 @@ function displayDifficulty(difficulty: DifficultyLevel): string {
     realistic: "Realistisk",
   };
   return labels[difficulty] ?? difficulty;
+}
+
+function directScenarioHref(scenarioId: ScenarioId, difficulty: DifficultyLevel): string {
+  const path = `/scenario/${scenarioUrlSlug(scenarioId)}/${difficultyUrlSlug(difficulty)}`;
+  return `${path}?intro=0`;
+}
+
+function scenarioUrlSlug(scenarioId: ScenarioId): string {
+  const slugs: Record<ScenarioId, string> = {
+    cover_to_cover: "skydd-till-skydd",
+    risk_zone_blocking: "riskzon",
+    leader_lost_picture: "skadad-soldat",
+    river_bridge_crossing: "broovergang",
+    ditch_line_contact: "dikeslinjen",
+  };
+  return slugs[scenarioId] ?? scenarioId;
+}
+
+function difficultyUrlSlug(difficulty: DifficultyLevel): string {
+  const slugs: Record<DifficultyLevel, string> = {
+    training: "easy",
+    normal: "normal",
+    realistic: "hard",
+  };
+  return slugs[difficulty] ?? difficulty;
 }
 
 function perceivedUnitFor(projection: Projection, unitId: string): PerceivedUnitProjection | undefined {
@@ -2386,6 +2773,38 @@ function mapPointToPixel(point: MapPoint, size: number): { x: number; y: number 
     x: point.x * size,
     y: point.y * size,
   };
+}
+
+function pixelToHex(point: { x: number; y: number }, size: number): HexCoord {
+  return mapPointToHex({
+    x: point.x / size,
+    y: point.y / size,
+  });
+}
+
+function mapPointToHex(point: MapPoint): HexCoord {
+  const q = (Math.sqrt(3) / 3) * point.x - point.y / 3;
+  const r = (2 / 3) * point.y;
+  return cubeRound({ x: q, y: -q - r, z: r });
+}
+
+function cubeRound(cube: { x: number; y: number; z: number }): HexCoord {
+  let rx = Math.round(cube.x);
+  let ry = Math.round(cube.y);
+  let rz = Math.round(cube.z);
+  const xDiff = Math.abs(rx - cube.x);
+  const yDiff = Math.abs(ry - cube.y);
+  const zDiff = Math.abs(rz - cube.z);
+
+  if (xDiff > yDiff && xDiff > zDiff) {
+    rx = -ry - rz;
+  } else if (yDiff > zDiff) {
+    ry = -rx - rz;
+  } else {
+    rz = -rx - ry;
+  }
+
+  return { q: rx, r: rz };
 }
 
 function directionToPixelVector(direction: Direction, length: number): { x: number; y: number } {

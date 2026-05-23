@@ -124,9 +124,32 @@ h2 {
   text-transform: uppercase;
 }
 
-.scenario-actions > button[data-command="start-scenario"] {
+.scenario-start-actions {
   min-width: 148px;
   align-self: end;
+  display: grid;
+  gap: 8px;
+}
+
+.scenario-start-actions > button[data-command="start-scenario"] {
+  min-width: 148px;
+}
+
+.scenario-direct-link {
+  display: block;
+  padding: 7px 10px;
+  border: 1px solid #394236;
+  background: #111410;
+  color: #d7dfd2;
+  text-align: center;
+  text-decoration: none;
+  font-size: 12px;
+}
+
+.scenario-direct-link:hover,
+.scenario-direct-link:focus {
+  border-color: #94ad83;
+  color: #eef4e8;
 }
 
 .scenario-body {
@@ -631,7 +654,9 @@ body[data-difficulty="realistic"] .gesture-command span {
 
 .roster-item {
   position: relative;
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
   min-height: 28px;
   padding: 6px 8px;
   border: 1px solid transparent;
@@ -677,6 +702,26 @@ body[data-difficulty="realistic"] .gesture-command span {
 .callsign {
   color: #eef4e8;
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roster-status {
+  max-width: 132px;
+  color: #9aa695;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roster-wait .roster-status {
+  color: #f0d86f;
+}
+
+.roster-warning .roster-status {
+  color: #e38b77;
 }
 
 .map-wrap {
@@ -862,6 +907,14 @@ body[data-difficulty="realistic"] .gesture-command span {
   fill: #504634;
 }
 
+.water {
+  fill: #1d3f4c;
+}
+
+.bridge {
+  fill: #66563b;
+}
+
 .unknown {
   fill: #131812;
 }
@@ -919,9 +972,26 @@ body[data-difficulty="realistic"] .gesture-command span {
   stroke-width: 1.9;
 }
 
+.terrain-icon-bridge {
+  fill: none;
+  stroke: #f0cf82;
+  stroke-width: 1.9;
+}
+
+.terrain-icon-water {
+  fill: none;
+  stroke: #8ed2e3;
+  stroke-width: 1.6;
+}
+
 .terrain-icon-road .terrain-icon-detail {
   stroke: #f4e6ad;
   stroke-width: 2.4;
+}
+
+.terrain-icon-bridge .terrain-icon-detail {
+  stroke: #f7e2a6;
+  stroke-width: 1.25;
 }
 
 .terrain-icon-detail {
@@ -952,6 +1022,12 @@ body[data-difficulty="realistic"] .gesture-command span {
   stroke-width: 2;
 }
 
+.unit-wounded circle {
+  fill: #be4d45;
+  stroke: #f4e6ad;
+  stroke-width: 2.8;
+}
+
 .facing {
   stroke: #f2f7e8;
   stroke-width: 3;
@@ -966,6 +1042,24 @@ body[data-difficulty="realistic"] .gesture-command span {
   stroke: #111410;
   stroke-width: 4;
   pointer-events: none;
+}
+
+.unit-status-label {
+  fill: #d7dfd2;
+  font-size: 8px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: #111410;
+  stroke-width: 3;
+  pointer-events: none;
+}
+
+.unit-status-label.status-wait {
+  fill: #f0d86f;
+}
+
+.unit-status-label.status-warning {
+  fill: #e38b77;
 }
 
 .unit-marker {
@@ -1100,6 +1194,14 @@ body[data-difficulty="normal"] .effect-zone {
   pointer-events: none;
 }
 
+.objective-succeeded .objective-marker {
+  stroke: #94d083;
+}
+
+.objective-failed .objective-marker {
+  stroke: #d66f64;
+}
+
 .objective-label {
   fill: #f0d86f;
   font-size: 12px;
@@ -1108,6 +1210,14 @@ body[data-difficulty="normal"] .effect-zone {
   stroke: #111410;
   stroke-width: 4;
   pointer-events: none;
+}
+
+.objective-succeeded .objective-label {
+  fill: #b9efad;
+}
+
+.objective-failed .objective-label {
+  fill: #f0a49c;
 }
 
 .objective-hitbox {
@@ -1223,13 +1333,16 @@ li {
 }
 
 @media (max-width: 900px) {
-  .layout {
-    grid-template-columns: 1fr;
-  }
-
   .intro-cards,
   .help-grid,
   .scenario-brief {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .layout,
+  .layout.is-aar-open {
     grid-template-columns: 1fr;
   }
 
@@ -1238,9 +1351,7 @@ li {
     border: 0;
     border-bottom: 1px solid #394236;
   }
-}
 
-@media (max-width: 640px) {
   .scenario-body {
     grid-template-columns: 1fr;
   }
@@ -1255,7 +1366,8 @@ li {
     flex-direction: column;
   }
 
-  .scenario-actions > button[data-command="start-scenario"] {
+  .scenario-start-actions,
+  .scenario-start-actions > button[data-command="start-scenario"] {
     width: 100%;
   }
 }

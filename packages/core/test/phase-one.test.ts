@@ -27,6 +27,8 @@ test("scenario options expose troop, goal, and selectable difficulty-backed setu
   const scenarios = listScenarioOptions();
   assert.ok(scenarios.some((scenario) => scenario.id === "cover_to_cover" && scenario.troop.length === 1));
   assert.ok(scenarios.some((scenario) => scenario.id === "leader_lost_picture" && scenario.troop.length === 8));
+  assert.ok(scenarios.some((scenario) => scenario.id === "river_bridge_crossing" && scenario.recommendedFormation === "file"));
+  assert.ok(scenarios.some((scenario) => scenario.id === "ditch_line_contact" && scenario.troop.length === 8));
 
   const session = createPhaseOneSession({
     seed: "scenario-picker",
@@ -41,6 +43,45 @@ test("scenario options expose troop, goal, and selectable difficulty-backed setu
   assert.equal(projection.player.role, "leader");
   assert.equal(session.world.units.filter((unit) => unit.side === "friendly").length, 2);
   assert.deepEqual(projection.objective.target, { q: 24, r: 50 });
+});
+
+test("procedural scenario maps create continuous roads, ditches, rivers, and bridge crossings", () => {
+  const bridgeSession = createPhaseOneSession({
+    seed: "procedural-bridge",
+    scenarioId: "river_bridge_crossing",
+    difficulty: "training",
+  });
+  const bridgeTerrain = terrainCounts(bridgeSession);
+
+  assert.ok((bridgeTerrain.water ?? 0) > 20);
+  assert.ok((bridgeTerrain.bridge ?? 0) > 0);
+  assert.ok((bridgeTerrain.road ?? 0) > 15);
+  assert.equal(connectedTerrainCount(bridgeSession, new Set(["water", "bridge"])), (bridgeTerrain.water ?? 0) + (bridgeTerrain.bridge ?? 0));
+  assert.ok(terrainHasNeighbour(bridgeSession, "bridge", new Set(["road"])));
+
+  let movingSession = bridgeSession;
+  const leader = movingSession.world.units.find((unit) => unit.role === "leader");
+  assert.ok(leader);
+  movingSession = dispatchCommand(movingSession, {
+    type: "move_to_hex",
+    unitId: leader.id,
+    target: movingSession.world.objective.target,
+    issuedAt: movingSession.world.time,
+  });
+  const movement = movingSession.events.find((event) => event.type === "movement_started");
+  assert.ok(movement);
+  const path = movement.payload.path as Array<{ q: number; r: number }>;
+  assert.ok(path.some((coord) => movingSession.world.map.tilesByKey[`${coord.q},${coord.r}`]?.terrain === "bridge"));
+  assert.ok(path.every((coord) => movingSession.world.map.tilesByKey[`${coord.q},${coord.r}`]?.terrain !== "water"));
+
+  const ditchSession = createPhaseOneSession({
+    seed: "procedural-ditch",
+    scenarioId: "ditch_line_contact",
+    difficulty: "training",
+  });
+  const ditchTerrain = terrainCounts(ditchSession);
+  assert.ok((ditchTerrain.ditch ?? 0) > 20);
+  assert.equal(connectedTerrainCount(ditchSession, new Set(["ditch"])), ditchTerrain.ditch);
 });
 
 test("movement command creates backend-owned pathing and advances over simulated time", () => {
@@ -173,21 +214,80 @@ test("group commander can form skytteled as a single file", () => {
     target: leader.coord,
     formation: "file",
     communication: "voice",
-    direction: "SE",
+    direction: "NW",
     issuedAt: session.world.time,
   });
 
   assert.equal(session.world.activeFormation?.formation, "file");
   assert.deepEqual(lineTargetsByUnit(session), {
     LEADER_1: { q: 8, r: 50 },
-    DEPUTY_1: { q: 7, r: 50 },
-    FRIENDLY_1: { q: 6, r: 50 },
-    FRIENDLY_2: { q: 5, r: 50 },
-    FRIENDLY_3: { q: 4, r: 50 },
-    FRIENDLY_4: { q: 3, r: 50 },
-    FRIENDLY_5: { q: 2, r: 50 },
-    FRIENDLY_6: { q: 1, r: 50 },
+    DEPUTY_1: { q: 10, r: 50 },
+    FRIENDLY_1: { q: 12, r: 50 },
+    FRIENDLY_2: { q: 14, r: 50 },
+    FRIENDLY_3: { q: 16, r: 50 },
+    FRIENDLY_4: { q: 18, r: 50 },
+    FRIENDLY_5: { q: 20, r: 50 },
+    FRIENDLY_6: { q: 22, r: 50 },
   });
+  const targets = Object.values(lineTargetsByUnit(session));
+  for (let index = 0; index < targets.length - 1; index += 1) {
+    assert.equal(hexDistance(targets[index], targets[index + 1]), 2);
+  }
+});
+
+test("skytteled follows when the group commander plots an embodied move", () => {
+  let session = createPhaseOneSession({ seed: "skytteled-follow", scenario: "group_commander" });
+  const leader = session.world.units.find((unit) => unit.role === "leader");
+  assert.ok(leader);
+
+  session = dispatchCommand(session, {
+    type: "issue_formation_order",
+    unitId: leader.id,
+    target: leader.coord,
+    formation: "file",
+    communication: "radio",
+    direction: "NW",
+    issuedAt: session.world.time,
+  });
+
+  for (let step = 0; step < 120 && session.world.units.some((unit) => unit.side === "friendly" && unit.intent.type !== "idle"); step += 1) {
+    session = advanceSession(session, 0.2, { random: () => 1 });
+  }
+
+  const formedLeader = session.world.unitsById[leader.id];
+  session = dispatchCommand(session, {
+    type: "issue_forward_order",
+    unitId: formedLeader.id,
+    formation: "file",
+    communication: "radio",
+    direction: "NW",
+    issuedAt: session.world.time,
+  });
+
+  for (let step = 0; step < 80 && session.world.activeFormation?.phase !== "advancing"; step += 1) {
+    session = advanceSession(session, 0.2, { random: () => 1 });
+  }
+
+  const advancingLeader = session.world.unitsById[leader.id];
+  session = dispatchCommand(session, {
+    type: "move_to_hex",
+    unitId: advancingLeader.id,
+    target: { q: advancingLeader.coord.q - 3, r: advancingLeader.coord.r },
+    issuedAt: session.world.time,
+  });
+
+  for (let step = 0; step < 3; step += 1) {
+    session = advanceSession(session, 0.2, { random: () => 1 });
+  }
+
+  const movingFollowers = session.world.units.filter((unit) => unit.side === "friendly" && unit.role !== "leader" && unit.intent.type === "moving");
+  assert.ok(movingFollowers.length >= 4);
+  assert.ok(
+    session.events.some(
+      (event) => event.type === "movement_started" && event.payload.reason === "embodied_leader_follow" && event.payload.unitId !== leader.id,
+    ),
+  );
+  assertUniqueFriendlyHexes(session);
 });
 
 test("group reformation routes around occupied friendly hexes instead of stalling", () => {
@@ -278,7 +378,7 @@ test("framåt arms embodied advance and halt stops every friendly unit", () => {
   }
 
   assert.ok(hexDistance(session.world.unitsById[leader.id].coord, embodiedLeader.coord) > 0);
-  assert.ok(session.world.units.some((unit) => unit.side === "friendly" && unit.intent.type === "moving"));
+  assert.ok(session.events.some((event) => event.type === "movement_started" && event.payload.reason === "embodied_leader_follow"));
 
   session = dispatchCommand(session, {
     type: "halt_group",
@@ -502,6 +602,12 @@ test("forward movement waits when a neighbour falls too far behind", () => {
         event.payload.reason === "neighbour_lagging",
     ),
   );
+  const projection = projectSession(session);
+  const waitingUnit = projection.units.find((unit) => unit.id === "FRIENDLY_2");
+  assert.equal(waitingUnit?.activity.state, "waiting");
+  assert.equal(waitingUnit?.activity.reason, "neighbour_lagging");
+  assert.equal(waitingUnit?.activity.relatedUnitId, "FRIENDLY_1");
+  assert.deepEqual(waitingUnit?.activity.target, { q: 23, r: 20 });
 });
 
 test("framåt uses the indicated direction instead of steering toward the scenario goal", () => {
@@ -869,6 +975,60 @@ test("opposing units probabilistically detect, alert, seek cover, and emit conta
   assert.ok(session.events.some((event) => event.type === "probabilistic_detection_resolved"));
   assert.ok(session.events.some((event) => event.type === "opposing_unit_moved_to_cover"));
   assert.ok(session.events.some((event) => event.type === "contact_pressure_emitted"));
+  assert.ok(session.events.some((event) => event.type === "incoming_fire_resolved"));
+  assert.ok(session.events.some((event) => event.type === "unit_wounded"));
+  assert.equal(session.world.unitsById.FRIENDLY_1.posture, "injured");
+});
+
+test("skadad soldat scenario has near opposing fire that can wound a group member", () => {
+  let session = createPhaseOneSession({
+    seed: "injury-scenario",
+    scenarioId: "leader_lost_picture",
+    difficulty: "training",
+  });
+
+  const opposing = session.world.units.filter((unit) => unit.side === "opposing");
+  assert.ok(opposing.some((unit) => hexDistance(unit.coord, session.world.objective.target) <= 8));
+
+  session = advanceSession(session, 0.5, { random: () => 0 });
+
+  const wound = session.events.find((event) => event.type === "unit_wounded");
+  assert.ok(wound);
+  const wounded = session.world.unitsById[String(wound.payload.unitId)];
+  assert.equal(wounded.posture, "injured");
+  assert.ok(wounded.status.includes("injured"));
+  assert.ok(session.events.some((event) => event.type === "status_report_emitted" && event.payload.sourceUnitId === wounded.id));
+});
+
+test("group objective succeeds when the leader and enough effective soldiers reach the goal area", () => {
+  let session = createPhaseOneSession({
+    seed: "objective-group",
+    scenarioId: "leader_lost_picture",
+    difficulty: "training",
+  });
+
+  const goal = session.world.objective.target;
+  const goalArea = [
+    goal,
+    { q: goal.q - 1, r: goal.r },
+    { q: goal.q + 1, r: goal.r },
+    { q: goal.q, r: goal.r - 1 },
+    { q: goal.q, r: goal.r + 1 },
+    { q: goal.q - 1, r: goal.r + 1 },
+  ];
+  session.world.units
+    .filter((unit) => unit.side === "friendly")
+    .forEach((unit, index) => {
+      const coord = goalArea[index % goalArea.length];
+      unit.coord = coord;
+      unit.position = mapPoint(coord);
+      session.world.unitsById[unit.id] = unit;
+    });
+
+  session = advanceSession(session, 0.1, { random: () => 1 });
+
+  assert.equal(session.world.objective.status, "succeeded");
+  assert.ok(session.events.some((event) => event.type === "objective_succeeded"));
 });
 
 test("event log deterministically rebuilds the same projection", () => {
@@ -916,6 +1076,60 @@ function lineTargetsByUnit(session: ReturnType<typeof createPhaseOneSession>): R
 
 function tileAt(projection: ReturnType<typeof projectSession>, coord: { q: number; r: number }) {
   return projection.map.tiles.find((tile) => tile.coord.q === coord.q && tile.coord.r === coord.r);
+}
+
+function terrainCounts(session: ReturnType<typeof createPhaseOneSession>): Record<string, number> {
+  return session.world.map.tiles.reduce<Record<string, number>>((counts, tile) => {
+    counts[tile.terrain] = (counts[tile.terrain] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
+function connectedTerrainCount(session: ReturnType<typeof createPhaseOneSession>, terrains: Set<string>): number {
+  const candidates = session.world.map.tiles.filter((tile) => terrains.has(tile.terrain));
+  const first = candidates[0];
+  if (!first) return 0;
+
+  const candidateKeys = new Set(candidates.map((tile) => `${tile.coord.q},${tile.coord.r}`));
+  const seen = new Set<string>();
+  const frontier = [first.coord];
+
+  while (frontier.length > 0) {
+    const coord = frontier.shift();
+    if (!coord) break;
+    const key = `${coord.q},${coord.r}`;
+    if (seen.has(key) || !candidateKeys.has(key)) continue;
+    seen.add(key);
+    for (const neighbour of testNeighbours(coord)) {
+      if (candidateKeys.has(`${neighbour.q},${neighbour.r}`) && !seen.has(`${neighbour.q},${neighbour.r}`)) {
+        frontier.push(neighbour);
+      }
+    }
+  }
+
+  return seen.size;
+}
+
+function terrainHasNeighbour(
+  session: ReturnType<typeof createPhaseOneSession>,
+  terrain: string,
+  neighbourTerrains: Set<string>,
+): boolean {
+  return session.world.map.tiles.some((tile) => {
+    if (tile.terrain !== terrain) return false;
+    return testNeighbours(tile.coord).some((coord) => neighbourTerrains.has(session.world.map.tilesByKey[`${coord.q},${coord.r}`]?.terrain));
+  });
+}
+
+function testNeighbours(coord: { q: number; r: number }): Array<{ q: number; r: number }> {
+  return [
+    { q: coord.q, r: coord.r - 1 },
+    { q: coord.q + 1, r: coord.r - 1 },
+    { q: coord.q + 1, r: coord.r },
+    { q: coord.q, r: coord.r + 1 },
+    { q: coord.q - 1, r: coord.r + 1 },
+    { q: coord.q - 1, r: coord.r },
+  ];
 }
 
 function mapPoint(coord: { q: number; r: number }): { x: number; y: number } {

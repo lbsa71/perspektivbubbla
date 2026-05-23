@@ -9,6 +9,12 @@ test("websocket session streams projection and accepts movement commands", async
   t.after(() => app.close());
 
   const { port } = app.address();
+  await fetch(`http://127.0.0.1:${port}/api/session`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scenarioId: "cover_to_cover", difficulty: "training", seed: "ws-move" }),
+  });
+
   const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
   t.after(() => socket.close());
 
@@ -23,7 +29,7 @@ test("websocket session streams projection and accepts movement commands", async
         type: "move_to_hex",
         unitId: first.projection.player.id,
         target: {
-          q: first.projection.player.coord.q + 1,
+          q: first.projection.player.coord.q + 4,
           r: first.projection.player.coord.r,
         },
         issuedAt: first.projection.time,
@@ -31,7 +37,9 @@ test("websocket session streams projection and accepts movement commands", async
     }),
   );
 
-  const second = await nextMessage(socket);
+  const second = await nextProjection(socket, (message) =>
+    message.projection.events.some((event: { type: string }) => event.type === "movement_started"),
+  );
   assert.equal(second.type, "projection");
   assert.ok(second.projection.events.some((event: { type: string }) => event.type === "movement_started"));
 });
@@ -65,7 +73,7 @@ test("websocket session accepts group formation orders", async (t) => {
     }),
   );
 
-  const second = await nextMessage(socket);
+  const second = await nextProjection(socket, (message) => message.projection.activeFormation?.formation === "line");
   assert.equal(second.type, "projection");
   assert.equal(second.projection.activeFormation?.formation, "line");
   assert.ok(second.projection.events.some((event: { type: string }) => event.type === "formation_order_issued"));
@@ -108,6 +116,10 @@ test("http api lists scenarios and starts selected difficulty", async (t) => {
   assert.equal(projection.scenario.troop.length, 2);
   assert.equal(projection.units.length, 2);
   assert.deepEqual(projection.objective.target, { q: 24, r: 50 });
+
+  const directScenarioResponse = await fetch(`http://127.0.0.1:${port}/scenario/skadad-soldat/easy?intro=0`);
+  assert.equal(directScenarioResponse.status, 200);
+  assert.match(await directScenarioResponse.text(), /Perspektivbubbla/);
 });
 
 type SocketMessage = {
@@ -134,5 +146,29 @@ function nextMessage(socket: WebSocket): Promise<SocketMessage> {
       { once: true },
     );
     socket.addEventListener("error", reject, { once: true });
+  });
+}
+
+function nextProjection(socket: WebSocket, predicate: (message: SocketMessage) => boolean): Promise<SocketMessage> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.removeEventListener("message", onMessage);
+      reject(new Error("timed out waiting for matching projection"));
+    }, 4000);
+    const onError = (event: Event) => {
+      clearTimeout(timeout);
+      socket.removeEventListener("message", onMessage);
+      reject(event);
+    };
+    const onMessage = (event: MessageEvent) => {
+      const message = JSON.parse(String(event.data)) as SocketMessage;
+      if (!predicate(message)) return;
+      clearTimeout(timeout);
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("error", onError);
+      resolve(message);
+    };
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("error", onError, { once: true });
   });
 }

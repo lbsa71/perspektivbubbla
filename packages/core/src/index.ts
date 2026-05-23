@@ -1,5 +1,5 @@
 export type Direction = "N" | "NE" | "SE" | "S" | "SW" | "NW";
-export type TerrainType = "field" | "grass" | "forest" | "ditch" | "wall" | "road";
+export type TerrainType = "field" | "grass" | "forest" | "ditch" | "wall" | "road" | "water" | "bridge";
 export type Posture = "standing" | "crouched" | "prone" | "moving" | "helping" | "injured";
 export type Side = "friendly" | "opposing";
 export type Formation = "column" | "line" | "file" | "wedge" | "dispersed" | "regroup";
@@ -9,8 +9,21 @@ export type GroupElement = "command" | "tat_1" | "tat_2";
 export type HexVisibility = "visible" | "memory" | "unknown";
 export type FormationPhase = "forming" | "advancing";
 export type DifficultyLevel = "training" | "normal" | "realistic";
-export type ScenarioId = "cover_to_cover" | "risk_zone_blocking" | "leader_lost_picture";
+export type ScenarioId =
+  | "cover_to_cover"
+  | "risk_zone_blocking"
+  | "leader_lost_picture"
+  | "river_bridge_crossing"
+  | "ditch_line_contact";
 type ScenarioKind = "soldier" | "risk_zone" | "group_commander";
+type ScenarioMapPlan = {
+  clearings?: Array<{ center: HexCoord; radius: number; terrain?: TerrainType }>;
+  fieldCorridors?: Array<{ from: HexCoord; to: HexCoord; width: number; bend?: number }>;
+  roads?: Array<{ from: HexCoord; to: HexCoord; width?: number; bend?: number }>;
+  ditches?: Array<{ from: HexCoord; to: HexCoord; width?: number; bend?: number }>;
+  rivers?: Array<{ from: HexCoord; to: HexCoord; width?: number; bend?: number; bridges?: Array<{ coord: HexCoord; radius?: number }> }>;
+  forests?: Array<{ center: HexCoord; radius: number }>;
+};
 
 export type HexCoord = {
   q: number;
@@ -181,6 +194,22 @@ export type Unit = {
   currentOrderId?: string;
 };
 
+export type UnitActivityProjection = {
+  state: "moving" | "waiting" | "blocked" | "holding" | "injured" | "idle";
+  target: HexCoord;
+  targetPoint?: MapPoint;
+  reason?: string;
+  relatedUnitId?: string;
+  orderId?: string;
+  progress?: number;
+  pathLength?: number;
+  updatedAt?: number;
+};
+
+export type ProjectedUnit = Unit & {
+  activity: UnitActivityProjection;
+};
+
 export type GameMap = {
   width: number;
   height: number;
@@ -325,8 +354,8 @@ export type Projection = {
     visibleHexes: HexCoord[];
     tiles: ProjectedHexTile[];
   };
-  player: Unit;
-  units: Unit[];
+  player: ProjectedUnit;
+  units: ProjectedUnit[];
   events: DomainEvent[];
   risk: {
     effectZones: EffectZoneProjection[];
@@ -365,6 +394,7 @@ const COHESION_MAX_FORWARD_LEAD = 1;
 const COHESION_MAX_NEIGHBOUR_DISTANCE_HEXES = 3.25;
 const FORMATION_READY_TOLERANCE_HEXES = 0.35;
 const FORMATION_LINE_SPACING_HEXES = 1.25;
+const FORMATION_FILE_SPACING_HEXES = 2;
 const FORWARD_TARGET_EDGE_MARGIN = 8;
 const FORMATION_SLOT_WEIGHT = 4;
 const FORMATION_CENTER_WEIGHT = 0.35;
@@ -374,8 +404,12 @@ const FORMATION_TERRAIN_WEIGHT = 0.4;
 const VISIBILITY_MEMORY_SECONDS = 10;
 const EFFECT_ZONE_RANGE_HEXES = 6;
 const HEARD_EVENT_WINDOW_SECONDS = 12;
+const OBJECTIVE_SINGLE_RADIUS_HEXES = 1;
+const OBJECTIVE_GROUP_RADIUS_HEXES = 3;
+const OBJECTIVE_GROUP_REQUIRED_RATIO = 0.75;
+const FIRE_RESOLUTION_WINDOW_SECONDS = 2.5;
 
-const SCENARIO_OPTIONS: Array<ScenarioOption & { kind: ScenarioKind; start: HexCoord; facing: Direction }> = [
+const SCENARIO_OPTIONS: Array<ScenarioOption & { kind: ScenarioKind; start: HexCoord; facing: Direction; map: ScenarioMapPlan }> = [
   {
     id: "cover_to_cover",
     kind: "soldier",
@@ -393,6 +427,13 @@ const SCENARIO_OPTIONS: Array<ScenarioOption & { kind: ScenarioKind; start: HexC
       target: { q: 30, r: 50 },
     },
     defaultDifficulty: "training",
+    map: {
+      fieldCorridors: [{ from: { q: 6, r: 50 }, to: { q: 32, r: 50 }, width: 4, bend: 1 }],
+      roads: [{ from: { q: 4, r: 52 }, to: { q: 34, r: 48 }, bend: 2 }],
+      ditches: [{ from: { q: 16, r: 46 }, to: { q: 18, r: 56 }, bend: 1 }],
+      forests: [{ center: { q: 30, r: 50 }, radius: 2 }],
+      clearings: [{ center: { q: 8, r: 50 }, radius: 3 }],
+    },
   },
   {
     id: "risk_zone_blocking",
@@ -413,6 +454,13 @@ const SCENARIO_OPTIONS: Array<ScenarioOption & { kind: ScenarioKind; start: HexC
     },
     defaultDifficulty: "training",
     recommendedFormation: "line",
+    map: {
+      fieldCorridors: [{ from: { q: 6, r: 50 }, to: { q: 28, r: 50 }, width: 4, bend: 1 }],
+      roads: [{ from: { q: 4, r: 51 }, to: { q: 30, r: 49 }, bend: 2 }],
+      ditches: [{ from: { q: 18, r: 45 }, to: { q: 22, r: 56 }, bend: 1 }],
+      forests: [{ center: { q: 24, r: 50 }, radius: 2 }],
+      clearings: [{ center: { q: 8, r: 50 }, radius: 3 }],
+    },
   },
   {
     id: "leader_lost_picture",
@@ -439,11 +487,106 @@ const SCENARIO_OPTIONS: Array<ScenarioOption & { kind: ScenarioKind; start: HexC
     },
     defaultDifficulty: "normal",
     recommendedFormation: "line",
+    map: {
+      fieldCorridors: [{ from: { q: 8, r: 50 }, to: { q: 34, r: 50 }, width: 5, bend: 1 }],
+      roads: [{ from: { q: 2, r: 52 }, to: { q: 38, r: 48 }, bend: 2 }],
+      ditches: [
+        { from: { q: 14, r: 47 }, to: { q: 18, r: 52 }, bend: 1 },
+        { from: { q: 24, r: 54 }, to: { q: 29, r: 57 }, bend: 1 },
+      ],
+      forests: [{ center: { q: 30, r: 50 }, radius: 2 }],
+      clearings: [{ center: { q: 8, r: 50 }, radius: 4 }],
+    },
+  },
+  {
+    id: "river_bridge_crossing",
+    kind: "group_commander",
+    title: "Broövergång under observation",
+    subtitle: "Å och bro",
+    description: "För gruppen över en å där vattnet stoppar rörelse och bron blir den tydliga, farliga passagen.",
+    start: { q: 10, r: 62 },
+    facing: "NE",
+    troop: [
+      { id: "LEADER_1", name: "Lind", role: "leader", element: "command", elementPosition: 1 },
+      { id: "DEPUTY_1", name: "Nordin", role: "deputy_leader", element: "command", elementPosition: 2 },
+      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "tat_1", elementPosition: 1 },
+      { id: "FRIENDLY_2", name: "Berg", role: "soldier", element: "tat_1", elementPosition: 2 },
+      { id: "FRIENDLY_3", name: "Ceder", role: "soldier", element: "tat_1", elementPosition: 3 },
+      { id: "FRIENDLY_4", name: "Dahl", role: "soldier", element: "tat_2", elementPosition: 1 },
+      { id: "FRIENDLY_5", name: "Ek", role: "soldier", element: "tat_2", elementPosition: 2 },
+      { id: "FRIENDLY_6", name: "Falk", role: "soldier", element: "tat_2", elementPosition: 3 },
+    ],
+    goal: {
+      title: "Säkra andra sidan",
+      description: "Ta över bron med bibehållen sammanhållning och undvik att fastna i flaskhalsen.",
+      target: { q: 36, r: 42 },
+    },
+    defaultDifficulty: "normal",
+    recommendedFormation: "file",
+    map: {
+      fieldCorridors: [{ from: { q: 10, r: 62 }, to: { q: 36, r: 42 }, width: 4, bend: 3 }],
+      roads: [{ from: { q: 6, r: 64 }, to: { q: 40, r: 40 }, bend: 2 }],
+      rivers: [
+        {
+          from: { q: 2, r: 48 },
+          to: { q: 62, r: 48 },
+          width: 1,
+          bridges: [{ coord: { q: 30, r: 48 }, radius: 1 }],
+        },
+      ],
+      forests: [
+        { center: { q: 18, r: 58 }, radius: 3 },
+        { center: { q: 34, r: 44 }, radius: 3 },
+      ],
+      clearings: [
+        { center: { q: 10, r: 62 }, radius: 4 },
+        { center: { q: 36, r: 42 }, radius: 3 },
+      ],
+    },
+  },
+  {
+    id: "ditch_line_contact",
+    kind: "group_commander",
+    title: "Dikeslinjen",
+    subtitle: "Sammanhängande dike",
+    description: "Bryt igenom en sammanhängande dikeslinje där motståndaren får skydd men gruppen kan utnyttja döda vinklar.",
+    start: { q: 12, r: 62 },
+    facing: "NE",
+    troop: [
+      { id: "LEADER_1", name: "Lind", role: "leader", element: "command", elementPosition: 1 },
+      { id: "DEPUTY_1", name: "Nordin", role: "deputy_leader", element: "command", elementPosition: 2 },
+      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "tat_1", elementPosition: 1 },
+      { id: "FRIENDLY_2", name: "Berg", role: "soldier", element: "tat_1", elementPosition: 2 },
+      { id: "FRIENDLY_3", name: "Ceder", role: "soldier", element: "tat_1", elementPosition: 3 },
+      { id: "FRIENDLY_4", name: "Dahl", role: "soldier", element: "tat_2", elementPosition: 1 },
+      { id: "FRIENDLY_5", name: "Ek", role: "soldier", element: "tat_2", elementPosition: 2 },
+      { id: "FRIENDLY_6", name: "Falk", role: "soldier", element: "tat_2", elementPosition: 3 },
+    ],
+    goal: {
+      title: "Ta terrängen bakom diket",
+      description: "Håll ihop linjen, hitta passagen genom diket och samla gruppen på andra sidan.",
+      target: { q: 36, r: 50 },
+    },
+    defaultDifficulty: "normal",
+    recommendedFormation: "line",
+    map: {
+      fieldCorridors: [{ from: { q: 12, r: 62 }, to: { q: 36, r: 50 }, width: 5, bend: 2 }],
+      roads: [{ from: { q: 8, r: 64 }, to: { q: 42, r: 60 }, bend: 2 }],
+      ditches: [{ from: { q: 8, r: 52 }, to: { q: 48, r: 55 }, width: 1, bend: 2 }],
+      forests: [
+        { center: { q: 20, r: 59 }, radius: 3 },
+        { center: { q: 39, r: 49 }, radius: 2 },
+      ],
+      clearings: [
+        { center: { q: 12, r: 62 }, radius: 4 },
+        { center: { q: 36, r: 50 }, radius: 3 },
+      ],
+    },
   },
 ];
 
 export function listScenarioOptions(): ScenarioOption[] {
-  return SCENARIO_OPTIONS.map(({ kind: _kind, start: _start, facing: _facing, ...option }) => clone(option));
+  return SCENARIO_OPTIONS.map(({ kind: _kind, start: _start, facing: _facing, map: _map, ...option }) => clone(option));
 }
 
 export function createPhaseOneSession(options: CreateSessionOptions = {}): Session {
@@ -655,12 +798,16 @@ export function advanceSession(session: Session, seconds: number, options: Advan
     next = appendAndApply(next, riskAndInformationEvents.map((event) => buildEvent(next, event.type, event.payload)));
   }
 
-  const opposingEvents = collectOpposingUnitEvents(next.world, random);
-  return appendAndApply(next, opposingEvents.map((event) => buildEvent(next, event.type, event.payload)));
+  const opposingEvents = collectOpposingUnitEvents(next, random);
+  next = appendAndApply(next, opposingEvents.map((event) => buildEvent(next, event.type, event.payload)));
+
+  const objectiveEvents = collectObjectiveEvents(next.world);
+  return appendAndApply(next, objectiveEvents.map((event) => buildEvent(next, event.type, event.payload)));
 }
 
 export function projectSession(session: Session, role: "player" | "observer" = "player"): Projection {
-  const player = clone(session.world.units.find((unit) => unit.side === "friendly") ?? session.world.units[0]);
+  const playerUnit = session.world.units.find((unit) => unit.side === "friendly") ?? session.world.units[0];
+  const player = projectUnit(session, playerUnit);
   const visibleHexes = visibleHexesFor(session.world, player);
   const visibleKeys = new Set(visibleHexes.map(hexKey));
   const rememberedHexes = session.world.visibilityMemory?.[player.id] ?? {};
@@ -689,8 +836,8 @@ export function projectSession(session: Session, role: "player" | "observer" = "
     player,
     units:
       role === "observer"
-        ? session.world.units.map(clone)
-        : session.world.units.filter((unit) => unit.side === "friendly" || visibleKeys.has(hexKey(unit.coord))).map(clone),
+        ? session.world.units.map((unit) => projectUnit(session, unit))
+        : session.world.units.filter((unit) => unit.side === "friendly" || visibleKeys.has(hexKey(unit.coord))).map((unit) => projectUnit(session, unit)),
     events,
     risk,
     perception: {
@@ -711,7 +858,13 @@ export function projectSession(session: Session, role: "player" | "observer" = "
           exposure: Number(event.payload.exposure),
         })),
       contactEvents: session.events
-        .filter((event) => event.type === "probabilistic_detection_resolved" || event.type === "contact_pressure_emitted")
+        .filter(
+          (event) =>
+            event.type === "probabilistic_detection_resolved" ||
+            event.type === "contact_pressure_emitted" ||
+            event.type === "incoming_fire_resolved" ||
+            event.type === "unit_wounded",
+        )
         .map(clone),
       blockingEvents: session.events.filter((event) => event.type === "friendly_effect_blocked" || event.type === "tat_coverage_gap").map(clone),
       orderEvents: session.events.filter(isOrderFlowEvent).slice(-500).map(clone),
@@ -719,6 +872,119 @@ export function projectSession(session: Session, role: "player" | "observer" = "
       heardEvents,
     },
   };
+}
+
+function projectUnit(session: Session, unit: Unit): ProjectedUnit {
+  return {
+    ...clone(unit),
+    activity: unitActivityFor(session, unit),
+  };
+}
+
+function unitActivityFor(session: Session, unit: Unit): UnitActivityProjection {
+  const waitEvent = latestUnitEvent(session, unit.id, "movement_waiting");
+  const blockedEvent = latestUnitEvent(session, unit.id, "movement_blocked");
+  const completedEvent = latestUnitEvent(session, unit.id, "movement_completed");
+  const recentWait = waitEvent && session.world.time - waitEvent.time <= 4 ? waitEvent : undefined;
+  const recentBlock = blockedEvent && session.world.time - blockedEvent.time <= 8 ? blockedEvent : undefined;
+
+  if (isUnitInjured(unit)) {
+    return {
+      state: "injured",
+      target: clone(unit.coord),
+      reason: "injured",
+      orderId: unit.currentOrderId,
+      updatedAt: latestUnitEvent(session, unit.id, "unit_wounded")?.time,
+    };
+  }
+
+  if (recentWait) {
+    return {
+      state: "waiting",
+      target: clone((recentWait.payload.target as HexCoord | undefined) ?? (unit.intent.type === "moving" ? unit.intent.target : unit.coord)),
+      targetPoint: unit.intent.type === "moving" ? clone(unit.intent.targetPoint) : undefined,
+      reason: String(recentWait.payload.reason ?? "waiting"),
+      relatedUnitId: typeof recentWait.payload.neighbourId === "string" ? recentWait.payload.neighbourId : undefined,
+      orderId: unit.currentOrderId,
+      progress: unit.intent.type === "moving" ? round(unit.intent.progress) : undefined,
+      pathLength: unit.intent.type === "moving" ? unit.intent.path.length : undefined,
+      updatedAt: recentWait.time,
+    };
+  }
+
+  if (recentBlock) {
+    return {
+      state: "blocked",
+      target: clone((recentBlock.payload.target as HexCoord | undefined) ?? (unit.intent.type === "moving" ? unit.intent.target : unit.coord)),
+      targetPoint: unit.intent.type === "moving" ? clone(unit.intent.targetPoint) : undefined,
+      reason: String(recentBlock.payload.reason ?? "blocked"),
+      orderId: unit.currentOrderId,
+      updatedAt: recentBlock.time,
+    };
+  }
+
+  if (unit.intent.type === "moving") {
+    return {
+      state: "moving",
+      target: clone(unit.intent.target),
+      targetPoint: clone(unit.intent.targetPoint),
+      reason: unit.currentOrderId ? "moving_to_order_target" : "moving_to_selected_hex",
+      orderId: unit.currentOrderId,
+      progress: round(unit.intent.progress),
+      pathLength: unit.intent.path.length,
+    };
+  }
+
+  if (completedEvent && session.world.time - completedEvent.time <= 6) {
+    return {
+      state: "holding",
+      target: clone((completedEvent.payload.at as HexCoord | undefined) ?? unit.coord),
+      reason: "movement_completed",
+      orderId: unit.currentOrderId,
+      updatedAt: completedEvent.time,
+    };
+  }
+
+  const activeFormation = session.world.activeFormation;
+  if (unit.side === "friendly" && activeFormation) {
+    if (unit.currentOrderId === activeFormation.orderId) {
+      return {
+        state: "holding",
+        target: clone(unit.coord),
+        reason:
+          activeFormation.orderKind === "forward" && activeFormation.phase === "advancing"
+            ? unit.role === "leader"
+              ? "leader_holding"
+              : "formation_position_holding"
+            : "waiting_for_formation",
+        orderId: unit.currentOrderId,
+      };
+    }
+
+    return {
+      state: "idle",
+      target: clone(unit.coord),
+      reason: "no_current_order",
+      orderId: unit.currentOrderId,
+    };
+  }
+
+  return {
+    state: "idle",
+    target: clone(unit.coord),
+    reason: "no_order",
+    orderId: unit.currentOrderId,
+  };
+}
+
+function latestUnitEvent(session: Session, unitId: string, type: string): DomainEvent | undefined {
+  for (let index = session.events.length - 1; index >= 0; index -= 1) {
+    const event = session.events[index];
+    if (event.type === type && (event.payload.unitId === unitId || event.payload.sourceUnitId === unitId)) {
+      return event;
+    }
+  }
+  return undefined;
 }
 
 function projectTileVisibility(
@@ -793,7 +1059,12 @@ function isOrderFlowEvent(event: DomainEvent): boolean {
     event.type === "friendly_effect_blocked" ||
     event.type === "poor_orientation_detected" ||
     event.type === "tat_coverage_gap" ||
-    event.type === "status_report_emitted"
+    event.type === "status_report_emitted" ||
+    event.type === "contact_pressure_emitted" ||
+    event.type === "incoming_fire_resolved" ||
+    event.type === "unit_wounded" ||
+    event.type === "objective_succeeded" ||
+    event.type === "objective_failed"
   );
 }
 
@@ -1104,7 +1375,7 @@ function buildInitialWorld(
   difficulty: DifficultyLevel,
   overrides?: PhaseOneOverrides,
 ): WorldState {
-  const map = buildMap(seed, overrides?.terrainPatches ?? []);
+  const map = buildMap(seed, [...scenarioTerrainPatches(scenarioOption, seed), ...(overrides?.terrainPatches ?? [])]);
   const start = overrides?.player?.coord ?? scenarioOption.start;
   const player: Unit = {
     id: "FRIENDLY_1",
@@ -1130,10 +1401,7 @@ function buildInitialWorld(
       : scenarioOption.kind === "risk_zone"
         ? buildRiskZoneUnits(overrides, scenarioOption)
         : [player];
-  const opposingOverrides = overrides?.opposing ?? [
-    { id: "OP_1", coord: { q: 64, r: 45 }, facing: "NW", posture: "crouched" },
-    { id: "OP_2", coord: { q: 72, r: 58 }, facing: "NW", posture: "standing" },
-  ];
+  const opposingOverrides = overrides?.opposing ?? defaultOpposingForScenario(scenarioOption.id);
   const opposing = opposingOverrides.map((unit, index): Unit => ({
     id: unit.id ?? `OP_${index + 1}`,
     name: `Observer ${index + 1}`,
@@ -1181,6 +1449,101 @@ function buildInitialWorld(
   }));
 }
 
+function scenarioTerrainPatches(
+  scenarioOption: (typeof SCENARIO_OPTIONS)[number],
+  seed: string,
+): Array<{ coord: HexCoord; terrain: TerrainType }> {
+  const patches = new Map<string, { coord: HexCoord; terrain: TerrainType }>();
+  const setPatch = (coord: HexCoord, terrain: TerrainType) => {
+    if (coord.q < 0 || coord.r < 0 || coord.q >= 100 || coord.r >= 100) return;
+    patches.set(hexKey(coord), { coord, terrain });
+  };
+  const paintRadius = (center: HexCoord, radius: number, terrain: TerrainType) => {
+    for (const coord of coordsWithinRadius(center, radius)) {
+      setPatch(coord, terrain);
+    }
+  };
+  const paintBridge = (center: HexCoord, radius: number) => {
+    const waterCoords = coordsWithinRadius(center, radius).filter((coord) => patches.get(hexKey(coord))?.terrain === "water");
+    const bridgeCoords = waterCoords.length > 0 ? waterCoords : [center];
+    for (const coord of bridgeCoords) {
+      setPatch(coord, "bridge");
+    }
+  };
+  const paintPath = (label: string, from: HexCoord, to: HexCoord, terrain: TerrainType, width = 0, bend = 0) => {
+    const path = proceduralFeaturePath(from, to, seed, `${scenarioOption.id}:${label}`, bend);
+    for (const coord of path) {
+      paintRadius(coord, width, terrain);
+    }
+  };
+
+  for (const clearing of scenarioOption.map.clearings ?? []) {
+    paintRadius(clearing.center, clearing.radius, clearing.terrain ?? "field");
+  }
+  for (const corridor of scenarioOption.map.fieldCorridors ?? []) {
+    paintPath("field", corridor.from, corridor.to, "field", corridor.width, corridor.bend ?? 0);
+  }
+  for (const forest of scenarioOption.map.forests ?? []) {
+    paintRadius(forest.center, forest.radius, "forest");
+  }
+  for (const ditch of scenarioOption.map.ditches ?? []) {
+    paintPath("ditch", ditch.from, ditch.to, "ditch", ditch.width ?? 0, ditch.bend ?? 0);
+  }
+  for (const road of scenarioOption.map.roads ?? []) {
+    paintPath("road", road.from, road.to, "road", road.width ?? 0, road.bend ?? 0);
+  }
+  for (const river of scenarioOption.map.rivers ?? []) {
+    paintPath("river", river.from, river.to, "water", river.width ?? 0, river.bend ?? 0);
+    for (const bridge of river.bridges ?? []) {
+      paintBridge(bridge.coord, bridge.radius ?? 0);
+    }
+  }
+
+  return [...patches.values()];
+}
+
+function defaultOpposingForScenario(
+  scenarioId: ScenarioId,
+): Array<Partial<Pick<Unit, "id" | "coord" | "facing" | "lookDirection" | "posture">>> {
+  if (scenarioId === "river_bridge_crossing") {
+    return [
+      { id: "OP_1", coord: { q: 29, r: 45 }, facing: "SW", lookDirection: "SW", posture: "crouched" },
+      { id: "OP_2", coord: { q: 36, r: 44 }, facing: "SW", lookDirection: "SW", posture: "crouched" },
+    ];
+  }
+  if (scenarioId === "ditch_line_contact") {
+    return [
+      { id: "OP_1", coord: { q: 28, r: 54 }, facing: "SW", lookDirection: "SW", posture: "crouched" },
+      { id: "OP_2", coord: { q: 36, r: 55 }, facing: "SW", lookDirection: "SW", posture: "crouched" },
+    ];
+  }
+  if (scenarioId === "leader_lost_picture") {
+    return [
+      { id: "OP_1", coord: { q: 16, r: 49 }, facing: "NW", lookDirection: "NW", posture: "crouched" },
+      { id: "OP_2", coord: { q: 26, r: 55 }, facing: "NW", lookDirection: "NW", posture: "crouched" },
+    ];
+  }
+  if (scenarioId === "risk_zone_blocking") {
+    return [{ id: "OP_1", coord: { q: 30, r: 48 }, facing: "NW", lookDirection: "NW", posture: "crouched" }];
+  }
+  return [
+    { id: "OP_1", coord: { q: 64, r: 45 }, facing: "NW", posture: "crouched" },
+    { id: "OP_2", coord: { q: 72, r: 58 }, facing: "NW", posture: "standing" },
+  ];
+}
+
+function proceduralFeaturePath(from: HexCoord, to: HexCoord, seed: string, label: string, bend: number): HexCoord[] {
+  if (bend <= 0) return lineBetween(from, to);
+  const fromPoint = axialToMapPoint(from);
+  const toPoint = axialToMapPoint(to);
+  const midpoint = averageMapPoint([fromPoint, toPoint]);
+  const direction = normalizeVector(subtractMapPoint(toPoint, fromPoint));
+  const normal = rightPerpendicular(direction);
+  const signed = ((hashString(`${seed}:${label}:bend`) % 2001) / 1000 - 1) * bend;
+  const waypoint = mapPointToHex(addMapPoint(midpoint, scaleVector(normal, signed)));
+  return dedupeCoords([...lineBetween(from, waypoint), ...lineBetween(waypoint, to)]);
+}
+
 function buildGroupCommanderUnits(overrides?: PhaseOneOverrides, scenarioOption = scenarioOptionById("leader_lost_picture")): Unit[] {
   const start = overrides?.player?.coord ?? scenarioOption.start;
   const leader: Unit = {
@@ -1224,12 +1587,12 @@ function buildGroupCommanderUnits(overrides?: PhaseOneOverrides, scenarioOption 
   };
 
   const soldierSpecs: Array<Pick<Unit, "id" | "name" | "coord" | "element" | "elementPosition">> = [
-    { id: "FRIENDLY_1", name: "Andersson", coord: { q: 7, r: 51 }, element: "tat_1", elementPosition: 1 },
-    { id: "FRIENDLY_2", name: "Berg", coord: { q: 7, r: 50 }, element: "tat_1", elementPosition: 2 },
-    { id: "FRIENDLY_3", name: "Ceder", coord: { q: 6, r: 51 }, element: "tat_1", elementPosition: 3 },
-    { id: "FRIENDLY_4", name: "Dahl", coord: { q: 9, r: 50 }, element: "tat_2", elementPosition: 1 },
-    { id: "FRIENDLY_5", name: "Ek", coord: { q: 9, r: 49 }, element: "tat_2", elementPosition: 2 },
-    { id: "FRIENDLY_6", name: "Falk", coord: { q: 10, r: 49 }, element: "tat_2", elementPosition: 3 },
+    { id: "FRIENDLY_1", name: "Andersson", coord: addCoord(start, { q: -1, r: 1 }), element: "tat_1", elementPosition: 1 },
+    { id: "FRIENDLY_2", name: "Berg", coord: addCoord(start, { q: -1, r: 0 }), element: "tat_1", elementPosition: 2 },
+    { id: "FRIENDLY_3", name: "Ceder", coord: addCoord(start, { q: -2, r: 1 }), element: "tat_1", elementPosition: 3 },
+    { id: "FRIENDLY_4", name: "Dahl", coord: addCoord(start, { q: 1, r: 0 }), element: "tat_2", elementPosition: 1 },
+    { id: "FRIENDLY_5", name: "Ek", coord: addCoord(start, { q: 1, r: -1 }), element: "tat_2", elementPosition: 2 },
+    { id: "FRIENDLY_6", name: "Falk", coord: addCoord(start, { q: 2, r: -1 }), element: "tat_2", elementPosition: 3 },
   ];
 
   const soldiers = soldierSpecs.map(
@@ -1306,39 +1669,26 @@ function buildMap(seed: string, patches: Array<{ coord: HexCoord; terrain: Terra
   const width = 100;
   const height = 100;
   const tiles: HexTile[] = [];
+  const tileIndexes = new Map<string, number>();
 
   for (let r = 0; r < height; r += 1) {
     for (let q = 0; q < width; q += 1) {
       const value = hashString(`${seed}:${q}:${r}`) % 100;
       const terrain: TerrainType =
-        q === 15 && r > 30 && r < 70
-          ? "road"
-          : value < 8
-            ? "forest"
-            : value < 16
-              ? "grass"
-              : value < 20
-                ? "ditch"
-                : value < 23
-                  ? "wall"
-                  : "field";
+        value < 9
+          ? "forest"
+          : value < 20
+            ? "grass"
+            : "field";
+      tileIndexes.set(hexKey({ q, r }), tiles.length);
       tiles.push(tileFromTerrain({ q, r }, terrain));
     }
   }
 
   for (const patch of patches) {
-    const index = tiles.findIndex((tile) => sameCoord(tile.coord, patch.coord));
+    const index = tileIndexes.get(hexKey(patch.coord)) ?? -1;
     if (index >= 0) {
       tiles[index] = tileFromTerrain(patch.coord, patch.terrain);
-    }
-  }
-
-  for (let r = 46; r <= 54; r += 1) {
-    for (let q = 0; q <= 30; q += 1) {
-      const index = tiles.findIndex((tile) => sameCoord(tile.coord, { q, r }));
-      if (index >= 0) {
-        tiles[index] = tileFromTerrain({ q, r }, q === 15 ? "road" : "field");
-      }
     }
   }
 
@@ -1353,6 +1703,8 @@ function tileFromTerrain(coord: HexCoord, terrain: TerrainType): HexTile {
     ditch: { moveCost: 2, cover: 2, concealment: 2, blocksSight: false, exposure: 1 },
     wall: { moveCost: 3, cover: 3, concealment: 1, blocksSight: true, exposure: 0 },
     road: { moveCost: 0.75, cover: 0, concealment: 0, blocksSight: false, exposure: 3 },
+    water: { moveCost: 99, cover: 0, concealment: 0, blocksSight: false, exposure: 0 },
+    bridge: { moveCost: 0.85, cover: 0, concealment: 0, blocksSight: false, exposure: 3 },
   };
   return { coord, terrain, ...values[terrain] };
 }
@@ -1496,6 +1848,21 @@ function applyEvent(world: WorldState, event: DomainEvent): WorldState {
     unit.coord = clone(event.payload.to as HexCoord);
     unit.position = axialToMapPoint(unit.coord);
     unit.posture = "crouched";
+  }
+  if (event.type === "unit_wounded") {
+    const unit = maybeMutableUnit(next, String(event.payload.unitId));
+    if (unit) {
+      unit.health = Math.min(unit.health, Number(event.payload.health ?? 35));
+      unit.posture = "injured";
+      unit.intent = { type: "idle" };
+      unit.status = Array.from(new Set([...unit.status, "injured"]));
+    }
+  }
+  if (event.type === "objective_succeeded") {
+    next.objective.status = "succeeded";
+  }
+  if (event.type === "objective_failed") {
+    next.objective.status = "failed";
   }
   return refreshVisibilityMemory(next);
 }
@@ -1689,11 +2056,12 @@ function collectEmbodiedLeaderFormationEvents(world: WorldState): Array<{ type: 
   }
 
   const receivers = formationReceivers(world, leader.id).filter((unit) => unit.currentOrderId === activeFormation.orderId);
+  const leaderFormationPoint = leader.intent.type === "moving" ? leader.intent.targetPoint : leader.position;
   const assignments = formationAssignments(
     world,
     receivers,
     activeFormation.formation,
-    leader.position,
+    leaderFormationPoint,
     activeFormation.direction,
     activeFormation.directionVector ?? directionVectorFromHexDirection(activeFormation.direction),
   );
@@ -1853,10 +2221,12 @@ function collectMotivatedFormationMovementEvents(
     if (progress < 1) {
       const nextPosition = moveMapPointToward(unit.position, unit.intent.targetPoint, seconds * movementRate(unit) * HEX_CENTER_STEP);
       const laggingNeighbour = firstLaggingNeighbourFromPosition(
+        unit,
         nextPosition,
         neighboursByUnit.get(unit.id) ?? [],
         simulatedPositions,
         plannedPositions,
+        activeFormation,
         activeFormation.directionVector ?? activeFormation.direction,
       );
       if (laggingNeighbour) {
@@ -2034,10 +2404,12 @@ function chooseMotivatedFormationStep(
     })
     .filter(() => {
       return !firstLaggingNeighbourFromPosition(
+        unit,
         nextPosition,
         neighbours,
         simulatedPositions,
         plannedPositions,
+        activeFormation,
         activeFormation.directionVector ?? activeFormation.direction,
       );
     });
@@ -2069,16 +2441,18 @@ function chooseMotivatedFormationStep(
 }
 
 function firstLaggingNeighbourFromPosition(
+  unit: Unit,
   position: MapPoint,
   neighbours: Unit[],
   simulatedPositions: Map<string, MapPoint>,
   plannedPositions: Map<string, MapPoint>,
+  activeFormation: FormationState,
   direction: Direction | MapVector,
 ): { neighbour: Unit; leadHexes: number } | undefined {
   for (const neighbour of neighbours) {
     const neighbourPosition = simulatedPositions.get(neighbour.id) ?? plannedPositions.get(neighbour.id) ?? neighbour.position;
     const leadHexes = forwardLeadInHexes(position, neighbourPosition, direction);
-    if (leadHexes > COHESION_MAX_FORWARD_LEAD) {
+    if (leadHexes > forwardLeadLimit(activeFormation, unit, neighbour)) {
       return { neighbour, leadHexes: round(leadHexes) };
     }
   }
@@ -2122,8 +2496,9 @@ function formationMotivationScore(
     const neighbourPosition = simulatedPositions.get(neighbour.id) ?? plannedPositions.get(neighbour.id) ?? neighbour.position;
     const distance = hexDistance(candidate, neighbourCoord);
     const lead = candidateProgress - forwardProgress(neighbourPosition, activeFormation.directionVector ?? activeFormation.direction);
+    const leadLimit = forwardLeadLimit(activeFormation, unit, neighbour) * HEX_CENTER_STEP;
     score += Math.max(0, distance - 2) * FORMATION_NEIGHBOUR_WEIGHT;
-    score += Math.max(0, lead - COHESION_MAX_FORWARD_LEAD * HEX_CENTER_STEP) * FORMATION_NEIGHBOUR_WEIGHT * 2;
+    score += Math.max(0, lead - leadLimit) * FORMATION_NEIGHBOUR_WEIGHT * 2;
     if (distance === 1) {
       score -= 0.4;
     }
@@ -2198,14 +2573,22 @@ function collectCohesionStops(world: WorldState): Map<string, { neighbourId: str
         reason: "neighbour_separated",
       });
     }
-    if (!stops.has(unit.id) && unit.intent.type === "moving" && isTooFarAhead(unit, neighbour, activeFormation.directionVector ?? activeFormation.direction)) {
+    if (
+      !stops.has(unit.id) &&
+      unit.intent.type === "moving" &&
+      isTooFarAhead(unit, neighbour, activeFormation.directionVector ?? activeFormation.direction, forwardLeadLimit(activeFormation, unit, neighbour))
+    ) {
       stops.set(unit.id, {
         neighbourId: neighbour.id,
         leadHexes: round(forwardLeadInHexes(unit.position, neighbour.position, activeFormation.directionVector ?? activeFormation.direction)),
         reason: "neighbour_lagging",
       });
     }
-    if (!stops.has(neighbour.id) && neighbour.intent.type === "moving" && isTooFarAhead(neighbour, unit, activeFormation.directionVector ?? activeFormation.direction)) {
+    if (
+      !stops.has(neighbour.id) &&
+      neighbour.intent.type === "moving" &&
+      isTooFarAhead(neighbour, unit, activeFormation.directionVector ?? activeFormation.direction, forwardLeadLimit(activeFormation, neighbour, unit))
+    ) {
       stops.set(neighbour.id, {
         neighbourId: unit.id,
         leadHexes: round(forwardLeadInHexes(neighbour.position, unit.position, activeFormation.directionVector ?? activeFormation.direction)),
@@ -2219,6 +2602,12 @@ function collectCohesionStops(world: WorldState): Map<string, { neighbourId: str
 
 function cohesionPairs(world: WorldState, leaderId: string): Array<[Unit, Unit]> {
   const receivers = formationReceivers(world, leaderId);
+  if (world.activeFormation?.formation === "file") {
+    const pairs: Array<[Unit, Unit]> = [];
+    appendChainPairs(pairs, receivers);
+    return pairs;
+  }
+
   const leader = receivers.find((unit) => unit.role === "leader");
   const deputy = receivers.find((unit) => unit.role === "deputy_leader");
   const tatOne = receivers.filter((unit) => unit.element === "tat_1");
@@ -2249,8 +2638,8 @@ function appendChainPairs(pairs: Array<[Unit, Unit]>, units: Unit[]): void {
   }
 }
 
-function isTooFarAhead(unit: Unit, neighbour: Unit, direction: Direction | MapVector): boolean {
-  return forwardLeadInHexes(unit.position, neighbour.position, direction) > COHESION_MAX_FORWARD_LEAD;
+function isTooFarAhead(unit: Unit, neighbour: Unit, direction: Direction | MapVector, maxForwardLead = COHESION_MAX_FORWARD_LEAD): boolean {
+  return forwardLeadInHexes(unit.position, neighbour.position, direction) > maxForwardLead;
 }
 
 function isTooFarFromNeighbour(unit: Unit, neighbour: Unit): boolean {
@@ -2259,6 +2648,25 @@ function isTooFarFromNeighbour(unit: Unit, neighbour: Unit): boolean {
 
 function forwardLeadInHexes(a: MapPoint, b: MapPoint, direction: Direction | MapVector): number {
   return (forwardProgress(a, direction) - forwardProgress(b, direction)) / HEX_CENTER_STEP;
+}
+
+function forwardLeadLimit(activeFormation: FormationState, unit: Unit, neighbour: Unit): number {
+  return COHESION_MAX_FORWARD_LEAD + expectedForwardLeadBetween(activeFormation, unit, neighbour);
+}
+
+function expectedForwardLeadBetween(activeFormation: FormationState, unit: Unit, neighbour: Unit): number {
+  if (activeFormation.formation !== "file") {
+    return 0;
+  }
+  return Math.max(0, formationFileOrderIndex(neighbour) - formationFileOrderIndex(unit)) * FORMATION_FILE_SPACING_HEXES;
+}
+
+function formationFileOrderIndex(unit: Unit): number {
+  if (unit.role === "leader") return 0;
+  if (unit.role === "deputy_leader") return 1;
+  if (unit.element === "tat_1") return 1 + (unit.elementPosition ?? 1);
+  if (unit.element === "tat_2") return 4 + (unit.elementPosition ?? 1);
+  return formationReceiverRank(unit);
 }
 
 function forwardProgress(coordOrPoint: HexCoord | MapPoint, direction: Direction | MapVector): number {
@@ -2674,6 +3082,18 @@ function heardEventForDomainEvent(
       heardEventFromSource(session, listener, role, event, source, "contact", "kontakttryck hörs i terrängen"),
     ];
   }
+  if (event.type === "incoming_fire_resolved") {
+    const source = session.world.unitsById[String(event.payload.targetId)] ?? listener;
+    return [
+      heardEventFromSource(session, listener, role, event, source, "contact", "inkommande eld"),
+    ];
+  }
+  if (event.type === "unit_wounded") {
+    const source = session.world.unitsById[String(event.payload.unitId)] ?? listener;
+    return [
+      heardEventFromSource(session, listener, role, event, source, "report", `${source.name} är skadad`),
+    ];
+  }
   return [];
 }
 
@@ -2724,41 +3144,188 @@ function latestReportForUnit(session: Session, unitId: string): ReportProjection
   return [...reportProjection(session)].reverse().find((report) => report.sourceUnitId === unitId);
 }
 
+function collectObjectiveEvents(world: WorldState): Array<{ type: string; payload: Record<string, unknown> }> {
+  if (world.objective.status !== "active") return [];
+  const friendlies = world.units.filter((unit) => unit.side === "friendly");
+  const effectiveFriendlies = friendlies.filter((unit) => !isUnitInjured(unit));
+  if (effectiveFriendlies.length === 0) {
+    return [
+      {
+        type: "objective_failed",
+        payload: { objectiveId: world.objective.id, reason: "no_effective_friendlies" },
+      },
+    ];
+  }
+
+  if (world.scenario.id === "cover_to_cover") {
+    const player = effectiveFriendlies[0];
+    const distance = hexDistance(player.coord, world.objective.target);
+    return distance <= OBJECTIVE_SINGLE_RADIUS_HEXES
+      ? [
+          {
+            type: "objective_succeeded",
+            payload: {
+              objectiveId: world.objective.id,
+              reason: "player_reached_objective",
+              unitId: player.id,
+              radiusHexes: OBJECTIVE_SINGLE_RADIUS_HEXES,
+              distanceHexes: distance,
+            },
+          },
+        ]
+      : [];
+  }
+
+  const radius = world.scenario.id === "risk_zone_blocking" ? 2 : OBJECTIVE_GROUP_RADIUS_HEXES;
+  const arrived = effectiveFriendlies.filter((unit) => hexDistance(unit.coord, world.objective.target) <= radius);
+  const leader = effectiveFriendlies.find((unit) => unit.role === "leader") ?? effectiveFriendlies[0];
+  const leaderArrived = hexDistance(leader.coord, world.objective.target) <= radius;
+  const required = world.scenario.id === "risk_zone_blocking"
+    ? effectiveFriendlies.length
+    : Math.max(1, Math.ceil(effectiveFriendlies.length * OBJECTIVE_GROUP_REQUIRED_RATIO));
+
+  if (!leaderArrived || arrived.length < required) {
+    return [];
+  }
+
+  return [
+    {
+      type: "objective_succeeded",
+      payload: {
+        objectiveId: world.objective.id,
+        reason: world.scenario.id === "risk_zone_blocking" ? "team_reached_objective" : "group_reached_objective",
+        radiusHexes: radius,
+        arrived: arrived.length,
+        required,
+        effectiveFriendlies: effectiveFriendlies.length,
+        injured: friendlies.length - effectiveFriendlies.length,
+        leaderId: leader.id,
+      },
+    },
+  ];
+}
+
 function collectOpposingUnitEvents(
-  world: WorldState,
+  session: Session,
   random: () => number,
 ): Array<{ type: string; payload: Record<string, unknown> }> {
   const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  const world = session.world;
   const friendlyUnits = world.units.filter((unit) => unit.side === "friendly");
   const opposingUnits = world.units.filter((unit) => unit.side === "opposing");
 
   for (const observer of opposingUnits) {
     events.push({ type: "opposing_unit_scanned", payload: { unitId: observer.id, direction: observer.lookDirection } });
-    for (const target of friendlyUnits) {
-      if (!canSee(world, observer, target)) {
-        continue;
+    const target = friendlyUnits
+      .filter((unit) => !isUnitInjured(unit))
+      .filter((unit) => canSee(world, observer, unit))
+      .sort((a, b) => contactTargetScore(world, observer, b) - contactTargetScore(world, observer, a))[0];
+    if (!target) {
+      continue;
+    }
+
+    const probability = detectionProbability(world, observer, target);
+    const detectionRoll = random();
+    const detected = observer.alerted || detectionRoll <= probability;
+    if (!detected) {
+      continue;
+    }
+
+    if (!observer.alerted) {
+      events.push({
+        type: "probabilistic_detection_resolved",
+        payload: { observerId: observer.id, targetId: target.id, probability: round(probability), roll: round(detectionRoll) },
+      });
+      events.push({ type: "opposing_unit_alerted", payload: { observerId: observer.id, targetId: target.id } });
+      const cover = nearestCover(world, observer.coord);
+      if (cover && !sameCoord(cover, observer.coord)) {
+        events.push({ type: "opposing_unit_moved_to_cover", payload: { unitId: observer.id, from: observer.coord, to: cover } });
       }
-      const probability = detectionProbability(world, observer, target);
-      const roll = random();
-      if (roll <= probability) {
-        events.push({
-          type: "probabilistic_detection_resolved",
-          payload: { observerId: observer.id, targetId: target.id, probability: round(probability), roll: round(roll) },
-        });
-        events.push({ type: "opposing_unit_alerted", payload: { observerId: observer.id, targetId: target.id } });
-        const cover = nearestCover(world, observer.coord);
-        if (cover && !sameCoord(cover, observer.coord)) {
-          events.push({ type: "opposing_unit_moved_to_cover", payload: { unitId: observer.id, from: observer.coord, to: cover } });
-        }
-        events.push({
-          type: "contact_pressure_emitted",
-          payload: { unitId: observer.id, targetId: target.id, kind: "abstract_return_fire" },
-        });
-      }
+    }
+
+    if (
+      hasRecentEvent(
+        session,
+        "contact_pressure_emitted",
+        FIRE_RESOLUTION_WINDOW_SECONDS,
+        (event) => event.payload.unitId === observer.id,
+      )
+    ) {
+      continue;
+    }
+
+    events.push({
+      type: "contact_pressure_emitted",
+      payload: { unitId: observer.id, targetId: target.id, kind: "direct_fire" },
+    });
+
+    if (
+      hasPriorEvent(
+        session,
+        "unit_wounded",
+        (event) => event.payload.byUnitId === observer.id,
+      )
+    ) {
+      continue;
+    }
+
+    const casualtyRisk = fireCasualtyProbability(world, observer, target);
+    const casualtyRoll = random();
+    events.push({
+      type: "incoming_fire_resolved",
+      payload: {
+        unitId: observer.id,
+        targetId: target.id,
+        probability: round(casualtyRisk),
+        roll: round(casualtyRoll),
+      },
+    });
+    if (casualtyRoll <= casualtyRisk) {
+      events.push({
+        type: "unit_wounded",
+        payload: {
+          unitId: target.id,
+          byUnitId: observer.id,
+          health: 35,
+          reason: "direct_fire",
+          probability: round(casualtyRisk),
+        },
+      });
+      events.push({
+        type: "status_report_emitted",
+        payload: {
+          sourceUnitId: target.id,
+          kind: "status",
+          message: "skadad, kan inte fortsätta framryckning",
+          coord: target.coord,
+          confidence: "medium",
+          relatedUnitId: observer.id,
+        },
+      });
     }
   }
 
   return events;
+}
+
+function isUnitInjured(unit: Unit): boolean {
+  return unit.posture === "injured" || unit.health <= 0 || unit.status.includes("injured");
+}
+
+function contactTargetScore(world: WorldState, observer: Unit, target: Unit): number {
+  const tile = world.map.tilesByKey[hexKey(target.coord)];
+  const distance = mapDistanceInHexes(observer.position, target.position);
+  return (tile?.exposure ?? 1) * 2 - (tile?.cover ?? 0) - (tile?.concealment ?? 0) * 0.5 - distance * 0.05;
+}
+
+function fireCasualtyProbability(world: WorldState, observer: Unit, target: Unit): number {
+  const tile = world.map.tilesByKey[hexKey(target.coord)];
+  const distance = mapDistanceInHexes(observer.position, target.position);
+  const posture = target.posture === "standing" ? 0.12 : target.posture === "crouched" ? -0.08 : -0.18;
+  const terrain = (tile?.exposure ?? 1) * 0.1 - (tile?.cover ?? 0) * 0.12 - (tile?.concealment ?? 0) * 0.08;
+  const range = distance <= 8 ? 0.12 : distance <= 16 ? 0.04 : -0.05;
+  const alertBonus = observer.alerted ? 0.06 : 0;
+  return clamp(0.08 + posture + terrain + range + alertBonus, 0.02, 0.65);
 }
 
 function formationReceivers(world: WorldState, leaderId: string): Unit[] {
@@ -2820,6 +3387,12 @@ function formationOffsets(formation: Formation, direction: Direction, receivers:
     return offsets;
   }
 
+  if (formation === "file") {
+    const backVector = scaleVector(normalizeVector(directionVector), -HEX_CENTER_STEP * FORMATION_FILE_SPACING_HEXES);
+    rankedReceivers.forEach((unit, index) => offsets.set(unit.id, scaleVector(backVector, index)));
+    return offsets;
+  }
+
   const offsetsByFormation: Record<Formation, HexCoord[]> = {
     column: [
       { q: 0, r: 0 },
@@ -2831,16 +3404,7 @@ function formationOffsets(formation: Formation, direction: Direction, receivers:
       addCoord(DIRECTIONS[right], coordInDirection({ q: 0, r: 0 }, back, 2)),
       addCoord(DIRECTIONS[right], coordInDirection({ q: 0, r: 0 }, back, 3)),
     ],
-    file: [
-      { q: 0, r: 0 },
-      coordInDirection({ q: 0, r: 0 }, back, 1),
-      coordInDirection({ q: 0, r: 0 }, back, 2),
-      coordInDirection({ q: 0, r: 0 }, back, 3),
-      coordInDirection({ q: 0, r: 0 }, back, 4),
-      coordInDirection({ q: 0, r: 0 }, back, 5),
-      coordInDirection({ q: 0, r: 0 }, back, 6),
-      coordInDirection({ q: 0, r: 0 }, back, 7),
-    ],
+    file: [],
     line: [
       { q: 0, r: 0 },
       perpendicularLineOffset(direction, "right", 1),
@@ -3218,6 +3782,9 @@ function occupiedHexes(world: WorldState, exceptUnitId?: string): Set<string> {
 }
 
 function movementRate(unit: Unit): number {
+  if (isUnitInjured(unit)) {
+    return 0;
+  }
   if (unit.posture === "prone") {
     return 0.25;
   }
@@ -3503,7 +4070,7 @@ function maybeMutableUnit(world: WorldState, unitId: string): Unit | undefined {
 }
 
 function isImpassable(tile: HexTile): boolean {
-  return tile.terrain === "wall" && tile.moveCost >= 3;
+  return tile.terrain === "water" || (tile.terrain === "wall" && tile.moveCost >= 3);
 }
 
 function inBounds(map: GameMap, coord: HexCoord): boolean {
