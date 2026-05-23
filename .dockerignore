@@ -1,0 +1,10 @@
+.git
+.github
+.agents
+.codex
+.DS_Store
+node_modules
+npm-debug.log*
+coverage
+docs
+packages/client/public/dist

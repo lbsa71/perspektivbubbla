@@ -11,6 +11,8 @@ export type FormationPhase = "forming" | "advancing";
 export type DifficultyLevel = "training" | "normal" | "realistic";
 export type ScenarioId =
   | "cover_to_cover"
+  | "cover_to_cover_hasty"
+  | "cover_to_cover_observed"
   | "risk_zone_blocking"
   | "leader_lost_picture"
   | "river_bridge_crossing"
@@ -64,6 +66,36 @@ export type ScenarioTroopPreview = {
   elementPosition?: number;
 };
 
+export type U3TAxis = "uppgiften" | "tiden" | "truppen" | "terrangen";
+
+export type U3TBrief = Record<U3TAxis, string>;
+
+export type ExposureSampleThreshold = {
+  exposureAtLeast: 1 | 2 | 3;
+  samples: number;
+  hard?: boolean;
+};
+
+export type CumulativeExposureThreshold = {
+  exposure: number;
+  hard?: boolean;
+};
+
+export type TrainingConstraints = {
+  timeLimitSeconds?: number;
+  maxExposureSamples?: ExposureSampleThreshold;
+  maxCumulativeExposure?: CumulativeExposureThreshold;
+  maxContactEvents?: number;
+  maxDetectionEvents?: number;
+  maxWounded?: number;
+};
+
+export type ScenarioTraining = {
+  u3t: U3TBrief;
+  constraints?: TrainingConstraints;
+  aarFocus?: string[];
+};
+
 export type ScenarioOption = {
   id: ScenarioId;
   title: string;
@@ -77,6 +109,7 @@ export type ScenarioOption = {
   };
   defaultDifficulty: DifficultyLevel;
   recommendedFormation?: Formation;
+  training?: ScenarioTraining;
 };
 
 export type ScenarioRuntime = {
@@ -92,6 +125,49 @@ export type ScenarioRuntime = {
     target: HexCoord;
   };
   recommendedFormation?: Formation;
+  training?: ScenarioTraining;
+};
+
+export type TrainingMetricState = "good" | "warn" | "bad";
+
+export type TrainingMetric = {
+  id: string;
+  label: string;
+  value: string;
+  state: TrainingMetricState;
+  detail?: string;
+};
+
+export type TrainingMetrics = {
+  elapsedSeconds: number;
+  distanceHexes: number;
+  exposureSamples: number;
+  highExposureSamples: number;
+  highExposureThreshold?: number;
+  severeExposureSamples: number;
+  cumulativeExposure: number;
+  contactEvents: number;
+  detectionEvents: number;
+  incomingFireEvents: number;
+  wounded: number;
+  thresholdsExceeded: string[];
+  hardFailures: string[];
+  metrics: TrainingMetric[];
+};
+
+export type U3TObservation = {
+  axis: U3TAxis;
+  label: string;
+  state: TrainingMetricState;
+  text: string;
+};
+
+export type TrainingAssessment = {
+  brief: U3TBrief;
+  constraints?: TrainingConstraints;
+  aarFocus: string[];
+  metrics: TrainingMetrics;
+  observations: U3TObservation[];
 };
 
 export type EffectZoneProjection = {
@@ -230,6 +306,7 @@ export type WorldState = {
   unitsById: Record<string, Unit>;
   visibilityMemory: Record<string, Record<string, number>>;
   activeFormation?: FormationState;
+  casualtyEvacuation?: CasualtyEvacuationState;
 };
 
 export type FormationState = {
@@ -253,6 +330,30 @@ export type ObjectiveState = {
   description: string;
   target: HexCoord;
   status: "active" | "succeeded" | "failed" | "transitioned";
+  constraints?: TrainingConstraints;
+};
+
+export type CasualtyCollectionPointId = "asa1" | "asa2";
+
+export type CasualtyCollectionPointState = {
+  id: CasualtyCollectionPointId;
+  label: string;
+  coord: HexCoord;
+  point: MapPoint;
+  setAt?: number;
+};
+
+export type CasualtyEvacuationState = {
+  collectionPointId?: CasualtyCollectionPointId;
+  activeCollectionPointId?: CasualtyCollectionPointId;
+  collectionPoints?: Partial<Record<CasualtyCollectionPointId, CasualtyCollectionPointState>>;
+  collectionPoint?: HexCoord;
+  collectionPointPoint?: MapPoint;
+  orderId?: string;
+  casualtyUnitId?: string;
+  helperUnitIds: string[];
+  phase: "idle" | "moving_to_casualty" | "dragging" | "completed";
+  issuedAt?: number;
 };
 
 export type DomainEvent = {
@@ -321,6 +422,21 @@ export type PlayerCommand =
       type: "halt_group";
       unitId: string;
       issuedAt: number;
+    }
+  | {
+      type: "set_casualty_collection_point";
+      unitId: string;
+      collectionPointId?: CasualtyCollectionPointId;
+      target: HexCoord;
+      issuedAt: number;
+    }
+  | {
+      type: "start_casualty_evacuation";
+      unitId: string;
+      collectionPointId?: CasualtyCollectionPointId;
+      casualtyUnitId?: string;
+      target?: HexCoord;
+      issuedAt: number;
     };
 
 export type PhaseOneOverrides = {
@@ -346,6 +462,7 @@ export type Projection = {
   time: number;
   scenario: ScenarioRuntime;
   objective: ObjectiveState;
+  casualtyEvacuation?: CasualtyEvacuationState;
   activeFormation?: FormationState;
   map: {
     width: number;
@@ -376,6 +493,7 @@ export type Projection = {
     orderEvents: DomainEvent[];
     reportEvents: DomainEvent[];
     heardEvents: HeardEventProjection[];
+    u3t?: TrainingAssessment;
   };
 };
 
@@ -427,12 +545,118 @@ const SCENARIO_OPTIONS: Array<ScenarioOption & { kind: ScenarioKind; start: HexC
       target: { q: 30, r: 50 },
     },
     defaultDifficulty: "training",
+    training: {
+      u3t: {
+        uppgiften: "Ta dig från startläget till skyddspunkten och kunna förklara vilket skydd du valde härnäst.",
+        tiden: "Ingen hård tidsgräns. Tempot bedöms mot hur mycket exponering rutten byggde upp.",
+        truppen: "En soldat. Motståndaren finns på djupet och reagerar främst på onödig exponering.",
+        terrangen: "Väg och öppen mark är snabbare men synliga. Dike och skog ger skydd och skyl.",
+      },
+      constraints: {
+        maxExposureSamples: { exposureAtLeast: 2, samples: 18 },
+        maxCumulativeExposure: { exposure: 35 },
+        maxContactEvents: 0,
+        maxWounded: 0,
+      },
+      aarFocus: ["Val av nästa skydd", "Exponeringstid", "Sikt mot trolig fiende", "Tempo kontra skydd"],
+    },
     map: {
       fieldCorridors: [{ from: { q: 6, r: 50 }, to: { q: 32, r: 50 }, width: 4, bend: 1 }],
       roads: [{ from: { q: 4, r: 52 }, to: { q: 34, r: 48 }, bend: 2 }],
       ditches: [{ from: { q: 16, r: 46 }, to: { q: 18, r: 56 }, bend: 1 }],
       forests: [{ center: { q: 30, r: 50 }, radius: 2 }],
       clearings: [{ center: { q: 8, r: 50 }, radius: 3 }],
+    },
+  },
+  {
+    id: "cover_to_cover_hasty",
+    kind: "soldier",
+    title: "Från skydd till skydd: tidspress",
+    subtitle: "En soldat / tid",
+    description: "Lös samma förflyttning när tiden är styrande: välj när det är värt att ta snabbare men mer exponerad terräng.",
+    start: { q: 8, r: 54 },
+    facing: "SE",
+    troop: [
+      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "command" },
+    ],
+    goal: {
+      title: "Nå skyddet före tidsgränsen",
+      description: "Ta dig till skogskanten innan tiden går ut, utan att fastna i kontakt eller bli utslagen.",
+      target: { q: 29, r: 50 },
+    },
+    defaultDifficulty: "training",
+    training: {
+      u3t: {
+        uppgiften: "Nå nästa skydd innan tidsgränsen utan att bli bunden av fiendens observation.",
+        tiden: "55 sekunder. Sen ankomst är ett misslyckat genomförande, även om rutten var försiktig.",
+        truppen: "En soldat mot observerande fiende längre fram. Du kan acceptera kort exponering men inte skada.",
+        terrangen: "Vägen ger fart. Diket och skogskanterna ger lägre risk men kan kosta tid.",
+      },
+      constraints: {
+        timeLimitSeconds: 55,
+        maxExposureSamples: { exposureAtLeast: 3, samples: 10 },
+        maxContactEvents: 1,
+        maxWounded: 0,
+      },
+      aarFocus: ["Tidsmarginal", "När du valde snabb mark", "Kontakttryck", "Sista skyddet före målet"],
+    },
+    map: {
+      fieldCorridors: [{ from: { q: 6, r: 54 }, to: { q: 31, r: 50 }, width: 4, bend: 1 }],
+      roads: [{ from: { q: 5, r: 55 }, to: { q: 31, r: 49 }, bend: 1 }],
+      ditches: [{ from: { q: 14, r: 51 }, to: { q: 22, r: 53 }, bend: 1 }],
+      forests: [
+        { center: { q: 17, r: 52 }, radius: 2 },
+        { center: { q: 29, r: 50 }, radius: 2 },
+      ],
+      clearings: [{ center: { q: 8, r: 54 }, radius: 3 }],
+    },
+  },
+  {
+    id: "cover_to_cover_observed",
+    kind: "soldier",
+    title: "Från skydd till skydd: observerad terräng",
+    subtitle: "En soldat / fiende",
+    description: "Förflytta dig genom terräng där fiendens blickfält gör vägen dit viktigare än att bara nå målhexen.",
+    start: { q: 8, r: 50 },
+    facing: "SE",
+    troop: [
+      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "command" },
+    ],
+    goal: {
+      title: "Nå skyddet utan att bli upptäckt",
+      description: "Använd döda vinklar, dike och skog så att exponeringen aldrig blir rutten som förklarar fiendekontakten.",
+      target: { q: 31, r: 50 },
+    },
+    defaultDifficulty: "normal",
+    training: {
+      u3t: {
+        uppgiften: "Nå målskyddet utan upptäckt. Rutten ska kunna motiveras utifrån fiendens observation.",
+        tiden: "Ingen fast tidsgräns. Tiden i observerbar terräng är däremot begränsad.",
+        truppen: "En soldat mot två observatörer. Upptäckt, kontakt eller skada bryter övningens syfte.",
+        terrangen: "Öppen korridor och väg är farliga. Dike, skog och flankförflyttning håller exponeringen nere.",
+      },
+      constraints: {
+        maxExposureSamples: { exposureAtLeast: 2, samples: 8, hard: true },
+        maxCumulativeExposure: { exposure: 28, hard: true },
+        maxDetectionEvents: 0,
+        maxContactEvents: 0,
+        maxWounded: 0,
+      },
+      aarFocus: ["Fiendens blickfält", "Exponerade hexar", "Död mark", "Varför rutten inte blev upptäckt"],
+    },
+    map: {
+      fieldCorridors: [{ from: { q: 6, r: 50 }, to: { q: 33, r: 50 }, width: 5, bend: 1 }],
+      roads: [{ from: { q: 5, r: 52 }, to: { q: 35, r: 48 }, bend: 1 }],
+      ditches: [
+        { from: { q: 14, r: 47 }, to: { q: 22, r: 55 }, bend: 1 },
+        { from: { q: 24, r: 53 }, to: { q: 31, r: 50 }, bend: 1 },
+      ],
+      forests: [
+        { center: { q: 13, r: 49 }, radius: 2 },
+        { center: { q: 22, r: 47 }, radius: 2 },
+        { center: { q: 31, r: 50 }, radius: 2 },
+      ],
+      clearings: [{ center: { q: 8, r: 50 }, radius: 2 }],
     },
   },
   {
@@ -725,6 +949,14 @@ export function dispatchCommand(session: Session, command: PlayerCommand): Sessi
     return dispatchHaltGroup(session, unit, command);
   }
 
+  if (command.type === "set_casualty_collection_point") {
+    return dispatchCasualtyCollectionPoint(session, unit, command);
+  }
+
+  if (command.type === "start_casualty_evacuation") {
+    return dispatchCasualtyEvacuation(session, unit, command);
+  }
+
   if (command.type === "set_posture") {
     return appendAndApply(session, [
       buildEvent(session, "command_accepted", { command }),
@@ -801,7 +1033,7 @@ export function advanceSession(session: Session, seconds: number, options: Advan
   const opposingEvents = collectOpposingUnitEvents(next, random);
   next = appendAndApply(next, opposingEvents.map((event) => buildEvent(next, event.type, event.payload)));
 
-  const objectiveEvents = collectObjectiveEvents(next.world);
+  const objectiveEvents = collectObjectiveEvents(next);
   return appendAndApply(next, objectiveEvents.map((event) => buildEvent(next, event.type, event.payload)));
 }
 
@@ -815,12 +1047,14 @@ export function projectSession(session: Session, role: "player" | "observer" = "
   const risk = riskProjection(session.world);
   const heardEvents = heardEventsFor(session, player, role);
   const reports = reportProjection(session);
+  const trainingAssessment = trainingAssessmentFor(session);
 
   return {
     sessionId: session.id,
     time: session.world.time,
     scenario: clone(session.world.scenario),
     objective: clone(session.world.objective),
+    casualtyEvacuation: session.world.casualtyEvacuation ? clone(session.world.casualtyEvacuation) : undefined,
     activeFormation: session.world.activeFormation ? clone(session.world.activeFormation) : undefined,
     map: {
       width: session.world.map.width,
@@ -870,6 +1104,7 @@ export function projectSession(session: Session, role: "player" | "observer" = "
       orderEvents: session.events.filter(isOrderFlowEvent).slice(-500).map(clone),
       reportEvents: session.events.filter((event) => event.type === "status_report_emitted").map(clone),
       heardEvents,
+      u3t: trainingAssessment,
     },
   };
 }
@@ -887,6 +1122,32 @@ function unitActivityFor(session: Session, unit: Unit): UnitActivityProjection {
   const completedEvent = latestUnitEvent(session, unit.id, "movement_completed");
   const recentWait = waitEvent && session.world.time - waitEvent.time <= 4 ? waitEvent : undefined;
   const recentBlock = blockedEvent && session.world.time - blockedEvent.time <= 8 ? blockedEvent : undefined;
+
+  if (unit.status.includes("being_dragged")) {
+    return {
+      state: unit.intent.type === "moving" ? "moving" : "holding",
+      target: clone(unit.intent.type === "moving" ? unit.intent.target : (session.world.casualtyEvacuation?.collectionPoint ?? unit.coord)),
+      targetPoint: unit.intent.type === "moving" ? clone(unit.intent.targetPoint) : session.world.casualtyEvacuation?.collectionPointPoint,
+      reason: unit.intent.type === "moving" ? "casualty_drag" : "casualty_drag_wait",
+      relatedUnitId: session.world.casualtyEvacuation?.helperUnitIds[0],
+      orderId: unit.currentOrderId,
+      progress: unit.intent.type === "moving" ? round(unit.intent.progress) : undefined,
+      pathLength: unit.intent.type === "moving" ? unit.intent.path.length : undefined,
+    };
+  }
+
+  if (unit.status.includes("evac_helper")) {
+    return {
+      state: unit.intent.type === "moving" ? "moving" : "holding",
+      target: clone(unit.intent.type === "moving" ? unit.intent.target : (session.world.casualtyEvacuation?.collectionPoint ?? unit.coord)),
+      targetPoint: unit.intent.type === "moving" ? clone(unit.intent.targetPoint) : session.world.casualtyEvacuation?.collectionPointPoint,
+      reason: unit.intent.type === "moving" ? "casualty_helper_drag" : "casualty_helper_wait",
+      relatedUnitId: session.world.casualtyEvacuation?.casualtyUnitId,
+      orderId: unit.currentOrderId,
+      progress: unit.intent.type === "moving" ? round(unit.intent.progress) : undefined,
+      pathLength: unit.intent.type === "moving" ? unit.intent.path.length : undefined,
+    };
+  }
 
   if (isUnitInjured(unit)) {
     return {
@@ -1049,6 +1310,10 @@ function isOrderFlowEvent(event: DomainEvent): boolean {
     event.type === "formation_order_issued" ||
     event.type === "formation_advance_started" ||
     event.type === "formation_movement_diagnostic" ||
+    event.type === "casualty_collection_point_set" ||
+    event.type === "casualty_evacuation_started" ||
+    event.type === "casualty_drag_started" ||
+    event.type === "casualty_evacuation_completed" ||
     event.type === "order_delivery_resolved" ||
     event.type === "group_halted" ||
     event.type === "movement_started" ||
@@ -1088,6 +1353,262 @@ function summarizeEventForProjection(event: DomainEvent): DomainEvent {
     };
   }
   return clone(event);
+}
+
+function trainingAssessmentFor(session: Session): TrainingAssessment | undefined {
+  const training = session.world.scenario.training;
+  if (!training) return undefined;
+  const constraints = session.world.objective.constraints ?? training.constraints;
+  const metrics = trainingMetricsFor(session, constraints);
+  return {
+    brief: clone(training.u3t),
+    constraints: constraints ? clone(constraints) : undefined,
+    aarFocus: clone(training.aarFocus ?? []),
+    metrics,
+    observations: u3tObservationsFor(session, metrics, constraints),
+  };
+}
+
+function trainingMetricsFor(session: Session, constraints?: TrainingConstraints): TrainingMetrics {
+  const world = session.world;
+  const friendlyIds = new Set(world.units.filter((unit) => unit.side === "friendly").map((unit) => unit.id));
+  const exposureValues = session.events
+    .filter((event) => event.type === "exposure_sampled" && friendlyIds.has(String(event.payload.unitId)))
+    .map((event) => Number(event.payload.exposure))
+    .filter(Number.isFinite);
+  const highExposureThreshold = constraints?.maxExposureSamples?.exposureAtLeast ?? 2;
+  const highExposureSamples = exposureValues.filter((exposure) => exposure >= highExposureThreshold).length;
+  const severeExposureSamples = exposureValues.filter((exposure) => exposure >= 3).length;
+  const cumulativeExposure = round(exposureValues.reduce((total, exposure) => total + Math.max(0, exposure), 0));
+  const contactEvents = session.events.filter((event) => event.type === "contact_pressure_emitted").length;
+  const detectionEvents = session.events.filter((event) => event.type === "probabilistic_detection_resolved").length;
+  const incomingFireEvents = session.events.filter((event) => event.type === "incoming_fire_resolved").length;
+  const wounded = world.units.filter((unit) => unit.side === "friendly" && isUnitInjured(unit)).length;
+  const player = world.units.find((unit) => unit.side === "friendly") ?? world.units[0];
+  const distanceHexes = player ? hexDistance(player.coord, world.objective.target) : 0;
+  const thresholdsExceeded: string[] = [];
+  const hardFailures: string[] = [];
+  const noteExceeded = (code: string, hard = true) => {
+    thresholdsExceeded.push(code);
+    if (hard) hardFailures.push(code);
+  };
+
+  if (constraints?.timeLimitSeconds !== undefined && world.time > constraints.timeLimitSeconds) {
+    noteExceeded("time_limit_exceeded");
+  }
+  if (
+    constraints?.maxExposureSamples &&
+    highExposureSamples > constraints.maxExposureSamples.samples
+  ) {
+    noteExceeded("exposure_threshold_exceeded", constraints.maxExposureSamples.hard === true);
+  }
+  if (
+    constraints?.maxCumulativeExposure &&
+    cumulativeExposure > constraints.maxCumulativeExposure.exposure
+  ) {
+    noteExceeded("cumulative_exposure_exceeded", constraints.maxCumulativeExposure.hard === true);
+  }
+  if (constraints?.maxContactEvents !== undefined && contactEvents > constraints.maxContactEvents) {
+    noteExceeded("contact_threshold_exceeded");
+  }
+  if (constraints?.maxDetectionEvents !== undefined && detectionEvents > constraints.maxDetectionEvents) {
+    noteExceeded("detection_threshold_exceeded");
+  }
+  if (constraints?.maxWounded !== undefined && wounded > constraints.maxWounded) {
+    noteExceeded("casualty_threshold_exceeded");
+  }
+
+  const metrics: TrainingMetric[] = [
+    distanceTrainingMetric(world, distanceHexes),
+    timeTrainingMetric(world.time, constraints?.timeLimitSeconds),
+    exposureTrainingMetric(highExposureSamples, highExposureThreshold, constraints?.maxExposureSamples),
+    cumulativeExposureTrainingMetric(cumulativeExposure, constraints?.maxCumulativeExposure),
+    boundedCountMetric("detections", "Upptäckt", detectionEvents, constraints?.maxDetectionEvents),
+    boundedCountMetric("contacts", "Kontakt", contactEvents, constraints?.maxContactEvents, incomingFireEvents > 0 ? `${incomingFireEvents} eldutfall` : undefined),
+    boundedCountMetric("wounded", "Skadade", wounded, constraints?.maxWounded),
+  ];
+
+  return {
+    elapsedSeconds: round(world.time),
+    distanceHexes,
+    exposureSamples: exposureValues.length,
+    highExposureSamples,
+    highExposureThreshold,
+    severeExposureSamples,
+    cumulativeExposure,
+    contactEvents,
+    detectionEvents,
+    incomingFireEvents,
+    wounded,
+    thresholdsExceeded,
+    hardFailures,
+    metrics,
+  };
+}
+
+function distanceTrainingMetric(world: WorldState, distanceHexes: number): TrainingMetric {
+  const radius = isCoverToCoverScenarioId(world.scenario.id)
+    ? OBJECTIVE_SINGLE_RADIUS_HEXES
+    : world.scenario.id === "risk_zone_blocking"
+      ? 2
+      : OBJECTIVE_GROUP_RADIUS_HEXES;
+  return {
+    id: "distance",
+    label: "Målavstånd",
+    value: `${distanceHexes} hex`,
+    state: distanceHexes <= radius ? "good" : distanceHexes <= radius + 5 ? "warn" : "bad",
+    detail: `krav ${radius} hex`,
+  };
+}
+
+function timeTrainingMetric(elapsedSeconds: number, limitSeconds?: number): TrainingMetric {
+  if (limitSeconds === undefined) {
+    return {
+      id: "time",
+      label: "Tid",
+      value: `${round(elapsedSeconds)} s`,
+      state: elapsedSeconds <= 75 ? "good" : elapsedSeconds <= 120 ? "warn" : "bad",
+    };
+  }
+  const remaining = round(limitSeconds - elapsedSeconds);
+  return {
+    id: "time",
+    label: "Tid",
+    value: `${round(elapsedSeconds)}/${limitSeconds} s`,
+    state: elapsedSeconds <= limitSeconds ? (remaining >= 10 ? "good" : "warn") : "bad",
+    detail: remaining >= 0 ? `${remaining} s marginal` : `${Math.abs(remaining)} s över`,
+  };
+}
+
+function exposureTrainingMetric(
+  highExposureSamples: number,
+  highExposureThreshold: number,
+  threshold?: ExposureSampleThreshold,
+): TrainingMetric {
+  if (!threshold) {
+    return {
+      id: "exposure",
+      label: "Exponering",
+      value: `${highExposureSamples} prov`,
+      state: highExposureSamples === 0 ? "good" : highExposureSamples <= 8 ? "warn" : "bad",
+      detail: `nivå ${highExposureThreshold}+`,
+    };
+  }
+  return {
+    id: "exposure",
+    label: "Exponering",
+    value: `${highExposureSamples}/${threshold.samples}`,
+    state: highExposureSamples <= threshold.samples ? "good" : threshold.hard ? "bad" : "warn",
+    detail: `nivå ${threshold.exposureAtLeast}+${threshold.hard ? ", hård gräns" : ""}`,
+  };
+}
+
+function cumulativeExposureTrainingMetric(
+  cumulativeExposure: number,
+  threshold?: CumulativeExposureThreshold,
+): TrainingMetric {
+  if (!threshold) {
+    return {
+      id: "cumulative_exposure",
+      label: "Ack. risk",
+      value: String(cumulativeExposure),
+      state: cumulativeExposure <= 12 ? "good" : cumulativeExposure <= 30 ? "warn" : "bad",
+    };
+  }
+  return {
+    id: "cumulative_exposure",
+    label: "Ack. risk",
+    value: `${cumulativeExposure}/${threshold.exposure}`,
+    state: cumulativeExposure <= threshold.exposure ? "good" : threshold.hard ? "bad" : "warn",
+    detail: threshold.hard ? "hård gräns" : undefined,
+  };
+}
+
+function boundedCountMetric(
+  id: string,
+  label: string,
+  count: number,
+  limit?: number,
+  detail?: string,
+): TrainingMetric {
+  if (limit === undefined) {
+    return {
+      id,
+      label,
+      value: String(count),
+      state: count === 0 ? "good" : count <= 2 ? "warn" : "bad",
+      detail,
+    };
+  }
+  return {
+    id,
+    label,
+    value: `${count}/${limit}`,
+    state: count <= limit ? "good" : "bad",
+    detail,
+  };
+}
+
+function u3tObservationsFor(
+  session: Session,
+  metrics: TrainingMetrics,
+  constraints?: TrainingConstraints,
+): U3TObservation[] {
+  const status = session.world.objective.status;
+  const timeMetric = metrics.metrics.find((metric) => metric.id === "time");
+  const exposureMetric = metrics.metrics.find((metric) => metric.id === "exposure");
+  const cumulativeMetric = metrics.metrics.find((metric) => metric.id === "cumulative_exposure");
+  const truppState: TrainingMetricState =
+    metrics.wounded > (constraints?.maxWounded ?? 0) ||
+    metrics.contactEvents > (constraints?.maxContactEvents ?? Number.POSITIVE_INFINITY) ||
+    metrics.detectionEvents > (constraints?.maxDetectionEvents ?? Number.POSITIVE_INFINITY)
+      ? "bad"
+      : metrics.detectionEvents > 0 || metrics.contactEvents > 0
+        ? "warn"
+        : "good";
+  const terrainState: TrainingMetricState =
+    exposureMetric?.state === "bad" || cumulativeMetric?.state === "bad"
+      ? "bad"
+      : exposureMetric?.state === "warn" || cumulativeMetric?.state === "warn"
+        ? "warn"
+        : "good";
+
+  return [
+    {
+      axis: "uppgiften",
+      label: "Uppgiften",
+      state: status === "succeeded" ? "good" : status === "failed" ? "bad" : metrics.distanceHexes <= 5 ? "warn" : "bad",
+      text: status === "succeeded"
+        ? "Uppgiften löstes: soldaten nådde målskyddet."
+        : status === "failed"
+          ? "Uppgiften bröts av en hård gräns innan målskyddet säkrades."
+          : `${metrics.distanceHexes} hex kvar till målskyddet.`,
+    },
+    {
+      axis: "tiden",
+      label: "Tiden",
+      state: timeMetric?.state ?? "good",
+      text: constraints?.timeLimitSeconds
+        ? `Tid ${metrics.elapsedSeconds}/${constraints.timeLimitSeconds} sekunder.`
+        : `Förbrukad tid ${metrics.elapsedSeconds} sekunder; bedöm om tempot var rimligt för risken.`,
+    },
+    {
+      axis: "truppen",
+      label: "Truppen",
+      state: truppState,
+      text: `${metrics.detectionEvents} upptäckter, ${metrics.contactEvents} kontakttryck, ${metrics.incomingFireEvents} eldutfall, ${metrics.wounded} skadade.`,
+    },
+    {
+      axis: "terrangen",
+      label: "Terrängen",
+      state: terrainState,
+      text: `${metrics.highExposureSamples} exponeringsprov på nivå ${metrics.highExposureThreshold ?? 2}+ och ${metrics.cumulativeExposure} ackumulerad risk.`,
+    },
+  ];
+}
+
+function isCoverToCoverScenarioId(id: ScenarioId): boolean {
+  return id === "cover_to_cover" || id === "cover_to_cover_hasty" || id === "cover_to_cover_observed";
 }
 
 export function hexDistance(a: HexCoord, b: HexCoord): number {
@@ -1247,6 +1768,197 @@ function dispatchHaltGroup(
     }),
     ...receivers.flatMap((receiver) => interruptIfMoving(session, receiver.id, "halt_order")),
   ]);
+}
+
+function casualtyCollectionPointLabel(id: CasualtyCollectionPointId | undefined): string {
+  return id === "asa2" ? "ÅSA2" : "ÅSA1";
+}
+
+function selectedCasualtyCollectionPointId(
+  evacuation: CasualtyEvacuationState | undefined,
+  requested: CasualtyCollectionPointId | undefined,
+): CasualtyCollectionPointId | undefined {
+  if (requested) return requested;
+  if (evacuation?.activeCollectionPointId) return evacuation.activeCollectionPointId;
+  if (evacuation?.collectionPointId) return evacuation.collectionPointId;
+  if (evacuation?.collectionPoints?.asa1) return "asa1";
+  if (evacuation?.collectionPoints?.asa2) return "asa2";
+  return evacuation?.collectionPoint ? "asa1" : undefined;
+}
+
+function dispatchCasualtyCollectionPoint(
+  session: Session,
+  issuer: Unit,
+  command: Extract<PlayerCommand, { type: "set_casualty_collection_point" }>,
+): Session {
+  if (issuer.side !== "friendly" || issuer.role !== "leader") {
+    return appendAndApply(session, [
+      buildEvent(session, "command_rejected", {
+        reason: "casualty_collection_requires_leader",
+        command,
+      }),
+    ]);
+  }
+
+  const tile = session.world.map.tilesByKey[hexKey(command.target)];
+  if (!tile || isImpassable(tile)) {
+    return appendAndApply(session, [
+      buildEvent(session, "command_rejected", {
+        reason: "casualty_collection_not_passable",
+        command,
+      }),
+    ]);
+  }
+
+  const collectionPointId = command.collectionPointId ?? "asa1";
+  return appendAndApply(session, [
+    buildEvent(session, "command_accepted", { command }),
+    buildEvent(session, "casualty_collection_point_set", {
+      issuerId: issuer.id,
+      collectionPointId,
+      label: casualtyCollectionPointLabel(collectionPointId),
+      target: command.target,
+      targetPoint: axialToMapPoint(command.target),
+      issuedAt: command.issuedAt,
+    }),
+  ]);
+}
+
+function dispatchCasualtyEvacuation(
+  session: Session,
+  issuer: Unit,
+  command: Extract<PlayerCommand, { type: "start_casualty_evacuation" }>,
+): Session {
+  if (issuer.side !== "friendly" || issuer.role !== "leader") {
+    return appendAndApply(session, [
+      buildEvent(session, "command_rejected", {
+        reason: "casualty_evacuation_requires_leader",
+        command,
+      }),
+    ]);
+  }
+
+  const collectionPointId = selectedCasualtyCollectionPointId(session.world.casualtyEvacuation, command.collectionPointId);
+  const storedCollectionPoint = collectionPointId
+    ? session.world.casualtyEvacuation?.collectionPoints?.[collectionPointId]
+    : undefined;
+  const collectionPoint = command.target ?? storedCollectionPoint?.coord ?? session.world.casualtyEvacuation?.collectionPoint;
+  if (!collectionPoint) {
+    return appendAndApply(session, [
+      buildEvent(session, "command_rejected", {
+        reason: "casualty_collection_missing",
+        command,
+      }),
+    ]);
+  }
+
+  const collectionTile = session.world.map.tilesByKey[hexKey(collectionPoint)];
+  if (!collectionTile || isImpassable(collectionTile)) {
+    return appendAndApply(session, [
+      buildEvent(session, "command_rejected", {
+        reason: "casualty_collection_not_passable",
+        command,
+      }),
+    ]);
+  }
+
+  const casualty =
+    (command.casualtyUnitId ? session.world.unitsById[command.casualtyUnitId] : undefined) ??
+    nearestWoundedFriendly(session.world, issuer.coord);
+  if (!casualty || casualty.side !== "friendly" || !isUnitInjured(casualty)) {
+    return appendAndApply(session, [
+      buildEvent(session, "command_rejected", {
+        reason: "no_wounded_soldier",
+        command,
+      }),
+    ]);
+  }
+
+  const helpers = casualtyHelpers(session.world, casualty, issuer.id);
+  if (helpers.length < 2) {
+    return appendAndApply(session, [
+      buildEvent(session, "command_rejected", {
+        reason: "not_enough_helpers",
+        command,
+        casualtyUnitId: casualty.id,
+      }),
+    ]);
+  }
+
+  const orderId = `${session.id}_cas_${session.events.length}`;
+  const helperAssignments = casualtyHelperAssignments(session.world, casualty, helpers);
+  const receivers = formationReceivers(session.world, issuer.id);
+  const events: DomainEvent[] = [
+    buildEvent(session, "command_accepted", { command }),
+    buildEvent(session, "group_halted", {
+      issuerId: issuer.id,
+      unitIds: receivers.map((receiver) => receiver.id),
+      reason: "casualty_evacuation",
+    }),
+    ...receivers.flatMap((receiver) => interruptIfMoving(session, receiver.id, "casualty_evacuation")),
+    buildEvent(session, "casualty_evacuation_started", {
+      orderId,
+      issuerId: issuer.id,
+      casualtyUnitId: casualty.id,
+      helperUnitIds: helpers.map((helper) => helper.id),
+      collectionPointId,
+      label: casualtyCollectionPointLabel(collectionPointId),
+      collectionPoint,
+      collectionPointPoint: storedCollectionPoint?.point ?? axialToMapPoint(collectionPoint),
+      phase: "moving_to_casualty",
+      issuedAt: command.issuedAt,
+    }),
+    buildEvent(session, "status_report_emitted", {
+      sourceUnitId: issuer.id,
+      kind: "status",
+      message: `${casualty.name} omhändertas, ${casualtyCollectionPointLabel(collectionPointId)} ${collectionPoint.q},${collectionPoint.r}`,
+      coord: issuer.coord,
+      confidence: "high",
+      relatedUnitId: casualty.id,
+    }),
+  ];
+
+  for (const assignment of helperAssignments) {
+    events.push(...interruptIfMoving(session, assignment.unit.id, "casualty_evacuation"));
+    const pathResult = nearestPath(session.world, assignment.unit.coord, assignment.target, {
+      blocked: occupiedHexes(session.world, assignment.unit.id),
+      allowTarget: true,
+      maxVisited: 1200,
+    });
+    if (sameCoord(assignment.unit.coord, assignment.target)) {
+      events.push(
+        buildEvent(session, "movement_completed", {
+          unitId: assignment.unit.id,
+          at: assignment.target,
+          targetPoint: assignment.targetPoint,
+          orderId,
+          reason: "moving_to_casualty",
+        }),
+      );
+    } else if (pathResult.path.length === 0) {
+      events.push(
+        buildEvent(session, "movement_blocked", {
+          unitId: assignment.unit.id,
+          from: assignment.unit.coord,
+          target: assignment.target,
+          reason: "no_path_to_casualty",
+        }),
+      );
+    } else {
+      events.push(
+        buildEvent(session, "movement_started", {
+          unitId: assignment.unit.id,
+          target: assignment.target,
+          targetPoint: assignment.targetPoint,
+          path: pathResult.path,
+          orderId,
+          reason: "moving_to_casualty",
+        }),
+      );
+    }
+  }
+
+  return appendAndApply(session, events);
 }
 
 function dispatchFormationToTarget(
@@ -1432,6 +2144,7 @@ function buildInitialWorld(
         troop: scenarioOption.troop,
         goal: scenarioOption.goal,
         recommendedFormation: scenarioOption.recommendedFormation,
+        training: scenarioOption.training ? clone(scenarioOption.training) : undefined,
       },
       difficulty,
       time: 0,
@@ -1441,6 +2154,7 @@ function buildInitialWorld(
         description: scenarioOption.goal.description,
         target: scenarioOption.goal.target,
         status: "active",
+        constraints: scenarioOption.training?.constraints ? clone(scenarioOption.training.constraints) : undefined,
       },
     map,
     units: [...friendlies, ...opposing],
@@ -1525,6 +2239,18 @@ function defaultOpposingForScenario(
   }
   if (scenarioId === "risk_zone_blocking") {
     return [{ id: "OP_1", coord: { q: 30, r: 48 }, facing: "NW", lookDirection: "NW", posture: "crouched" }];
+  }
+  if (scenarioId === "cover_to_cover_hasty") {
+    return [
+      { id: "OP_1", coord: { q: 35, r: 47 }, facing: "SW", lookDirection: "SW", posture: "crouched" },
+      { id: "OP_2", coord: { q: 42, r: 52 }, facing: "NW", lookDirection: "NW", posture: "standing" },
+    ];
+  }
+  if (scenarioId === "cover_to_cover_observed") {
+    return [
+      { id: "OP_1", coord: { q: 33, r: 47 }, facing: "SW", lookDirection: "SW", posture: "crouched" },
+      { id: "OP_2", coord: { q: 25, r: 54 }, facing: "NW", lookDirection: "NW", posture: "crouched" },
+    ];
   }
   return [
     { id: "OP_1", coord: { q: 64, r: 45 }, facing: "NW", posture: "crouched" },
@@ -1858,6 +2584,107 @@ function applyEvent(world: WorldState, event: DomainEvent): WorldState {
       unit.status = Array.from(new Set([...unit.status, "injured"]));
     }
   }
+  if (event.type === "casualty_collection_point_set") {
+    const collectionPointId: CasualtyCollectionPointId = event.payload.collectionPointId === "asa2" ? "asa2" : "asa1";
+    const coord = clone(event.payload.target as HexCoord);
+    const point = clone((event.payload.targetPoint as MapPoint | undefined) ?? axialToMapPoint(event.payload.target as HexCoord));
+    const existing = next.casualtyEvacuation ?? { helperUnitIds: [], phase: "idle" as const };
+    next.casualtyEvacuation = {
+      ...existing,
+      collectionPointId,
+      activeCollectionPointId: collectionPointId,
+      collectionPoints: {
+        ...(existing.collectionPoints ?? {}),
+        [collectionPointId]: {
+          id: collectionPointId,
+          label: casualtyCollectionPointLabel(collectionPointId),
+          coord,
+          point,
+          setAt: Number(event.payload.issuedAt ?? event.time),
+        },
+      },
+      collectionPoint: coord,
+      collectionPointPoint: point,
+      phase: next.casualtyEvacuation?.phase === "dragging" || next.casualtyEvacuation?.phase === "moving_to_casualty"
+        ? next.casualtyEvacuation.phase
+        : "idle",
+    };
+  }
+  if (event.type === "casualty_evacuation_started") {
+    const helperUnitIds = clone((event.payload.helperUnitIds as string[] | undefined) ?? []);
+    const collectionPointId: CasualtyCollectionPointId = event.payload.collectionPointId === "asa2" ? "asa2" : "asa1";
+    const coord = clone(event.payload.collectionPoint as HexCoord);
+    const point = clone(
+      (event.payload.collectionPointPoint as MapPoint | undefined) ?? axialToMapPoint(event.payload.collectionPoint as HexCoord),
+    );
+    const existing = next.casualtyEvacuation ?? { helperUnitIds: [], phase: "idle" as const };
+    next.casualtyEvacuation = {
+      ...existing,
+      collectionPointId,
+      activeCollectionPointId: collectionPointId,
+      collectionPoints: {
+        ...(existing.collectionPoints ?? {}),
+        [collectionPointId]: {
+          id: collectionPointId,
+          label: casualtyCollectionPointLabel(collectionPointId),
+          coord,
+          point,
+          setAt: Number(event.payload.issuedAt ?? event.time),
+        },
+      },
+      collectionPoint: coord,
+      collectionPointPoint: point,
+      orderId: String(event.payload.orderId),
+      casualtyUnitId: String(event.payload.casualtyUnitId),
+      helperUnitIds,
+      phase: "moving_to_casualty",
+      issuedAt: Number(event.payload.issuedAt ?? event.time),
+    };
+    for (const unitId of [String(event.payload.casualtyUnitId), ...helperUnitIds]) {
+      const unit = maybeMutableUnit(next, unitId);
+      if (!unit) continue;
+      unit.currentOrderId = String(event.payload.orderId);
+      unit.status = Array.from(new Set([...unit.status, unitId === String(event.payload.casualtyUnitId) ? "evac_pending" : "evac_helper"]));
+    }
+  }
+  if (event.type === "casualty_drag_started") {
+    const helperUnitIds = clone((event.payload.helperUnitIds as string[] | undefined) ?? next.casualtyEvacuation?.helperUnitIds ?? []);
+    next.casualtyEvacuation = {
+      ...(next.casualtyEvacuation ?? { helperUnitIds, phase: "dragging" }),
+      orderId: String(event.payload.orderId ?? next.casualtyEvacuation?.orderId),
+      casualtyUnitId: String(event.payload.casualtyUnitId ?? next.casualtyEvacuation?.casualtyUnitId),
+      helperUnitIds,
+      phase: "dragging",
+    };
+    const casualty = maybeMutableUnit(next, String(event.payload.casualtyUnitId));
+    if (casualty) {
+      casualty.status = Array.from(new Set([...casualty.status.filter((status) => status !== "evac_pending"), "being_dragged"]));
+      casualty.currentOrderId = String(event.payload.orderId ?? casualty.currentOrderId);
+    }
+    for (const helperId of helperUnitIds) {
+      const helper = maybeMutableUnit(next, helperId);
+      if (!helper) continue;
+      helper.posture = "helping";
+      helper.status = Array.from(new Set([...helper.status, "evac_helper"]));
+      helper.currentOrderId = String(event.payload.orderId ?? helper.currentOrderId);
+    }
+  }
+  if (event.type === "casualty_evacuation_completed") {
+    if (next.casualtyEvacuation) {
+      next.casualtyEvacuation = {
+        ...next.casualtyEvacuation,
+        phase: "completed",
+      };
+    }
+    const helperUnitIds = (event.payload.helperUnitIds as string[] | undefined) ?? [];
+    for (const unitId of [String(event.payload.casualtyUnitId), ...helperUnitIds]) {
+      const unit = maybeMutableUnit(next, unitId);
+      if (!unit) continue;
+      unit.intent = { type: "idle" };
+      unit.status = unit.status.filter((status) => status !== "being_dragged" && status !== "evac_pending" && status !== "evac_helper");
+      if (unit.posture === "helping") unit.posture = "crouched";
+    }
+  }
   if (event.type === "objective_succeeded") {
     next.objective.status = "succeeded";
   }
@@ -1890,6 +2717,7 @@ function collectMovementEvents(world: WorldState, seconds: number): Array<{ type
     return phaseEvents;
   }
 
+  events.push(...collectCasualtyEvacuationEvents(world));
   events.push(...collectEmbodiedLeaderFormationEvents(world));
 
   const motivatedFormation = collectMotivatedFormationMovementEvents(world, seconds);
@@ -2000,6 +2828,135 @@ function collectMovementEvents(world: WorldState, seconds: number): Array<{ type
     }
   }
   return events;
+}
+
+function collectCasualtyEvacuationEvents(world: WorldState): Array<{ type: string; payload: Record<string, unknown> }> {
+  const evacuation = world.casualtyEvacuation;
+  if (!evacuation || !evacuation.orderId || !evacuation.casualtyUnitId || !evacuation.collectionPoint || evacuation.phase === "completed") {
+    return [];
+  }
+
+  const casualty = world.unitsById[evacuation.casualtyUnitId];
+  const helpers = evacuation.helperUnitIds.map((unitId) => world.unitsById[unitId]).filter(Boolean);
+  if (!casualty || helpers.length < 2) {
+    return [];
+  }
+
+  if (evacuation.phase === "moving_to_casualty") {
+    const helpersReady = helpers.every((helper) => hexDistance(helper.coord, casualty.coord) <= 1 && helper.intent.type === "idle");
+    if (!helpersReady) {
+      return [];
+    }
+
+    const casualtyTarget = nearestPassableCasualtyTarget(world, evacuation.collectionPoint, new Set([casualty.id, ...helpers.map((helper) => helper.id)]));
+    const helperTargets = helperEscortTargets(world, evacuation.collectionPoint, helpers, casualtyTarget);
+    const collectionPointId = selectedCasualtyCollectionPointId(evacuation, undefined);
+    const events: Array<{ type: string; payload: Record<string, unknown> }> = [
+      {
+        type: "casualty_drag_started",
+        payload: {
+          orderId: evacuation.orderId,
+          casualtyUnitId: casualty.id,
+          helperUnitIds: helpers.map((helper) => helper.id),
+          collectionPointId,
+          label: casualtyCollectionPointLabel(collectionPointId),
+          collectionPoint: evacuation.collectionPoint,
+          casualtyTarget,
+        },
+      },
+      {
+        type: "status_report_emitted",
+        payload: {
+          sourceUnitId: helpers[0].id,
+          kind: "status",
+          message: `${casualty.name} släpas mot ${casualtyCollectionPointLabel(collectionPointId)}`,
+          coord: helpers[0].coord,
+          confidence: "high",
+          relatedUnitId: casualty.id,
+        },
+      },
+    ];
+
+    events.push(...movementEventsForCasualtyUnit(world, casualty, casualtyTarget, evacuation.orderId, "casualty_drag"));
+    for (const helper of helpers) {
+      const helperTarget = helperTargets.get(helper.id) ?? helper.coord;
+      events.push(...movementEventsForCasualtyUnit(world, helper, helperTarget, evacuation.orderId, "casualty_helper_drag"));
+    }
+    return events;
+  }
+
+  if (evacuation.phase === "dragging") {
+    const casualtyArrived = hexDistance(casualty.coord, evacuation.collectionPoint) <= 1;
+    const helpersArrived = helpers.every((helper) => hexDistance(helper.coord, evacuation.collectionPoint) <= 2);
+    if (!casualtyArrived || !helpersArrived) {
+      return [];
+    }
+
+    const collectionPointId = selectedCasualtyCollectionPointId(evacuation, undefined);
+    return [
+      {
+        type: "casualty_evacuation_completed",
+        payload: {
+          orderId: evacuation.orderId,
+          casualtyUnitId: casualty.id,
+          helperUnitIds: helpers.map((helper) => helper.id),
+          collectionPointId,
+          label: casualtyCollectionPointLabel(collectionPointId),
+          collectionPoint: evacuation.collectionPoint,
+        },
+      },
+      {
+        type: "status_report_emitted",
+        payload: {
+          sourceUnitId: helpers[0].id,
+          kind: "status",
+          message: `${casualty.name} vid ${casualtyCollectionPointLabel(collectionPointId)}`,
+          coord: casualty.coord,
+          confidence: "high",
+          relatedUnitId: casualty.id,
+        },
+      },
+    ];
+  }
+
+  return [];
+}
+
+function movementEventsForCasualtyUnit(
+  world: WorldState,
+  unit: Unit,
+  target: HexCoord,
+  orderId: string,
+  reason: string,
+): Array<{ type: string; payload: Record<string, unknown> }> {
+  if (sameCoord(unit.coord, target)) {
+    return [
+      {
+        type: "movement_completed",
+        payload: { unitId: unit.id, at: target, targetPoint: axialToMapPoint(target), orderId, reason },
+      },
+    ];
+  }
+
+  const pathResult = nearestPath(world, unit.coord, target, {
+    blocked: occupiedHexes(world, unit.id),
+    allowTarget: true,
+    maxVisited: 1600,
+  });
+  if (pathResult.path.length === 0) {
+    return [
+      {
+        type: "movement_blocked",
+        payload: { unitId: unit.id, from: unit.coord, target, reason: "no_path_to_casualty_collection" },
+      },
+    ];
+  }
+  return [
+    {
+      type: "movement_started",
+      payload: { unitId: unit.id, target, targetPoint: axialToMapPoint(target), path: pathResult.path, orderId, reason },
+    },
+  ];
 }
 
 function collectForwardFormationPhaseEvents(world: WorldState): Array<{ type: string; payload: Record<string, unknown> }> {
@@ -3144,7 +4101,14 @@ function latestReportForUnit(session: Session, unitId: string): ReportProjection
   return [...reportProjection(session)].reverse().find((report) => report.sourceUnitId === unitId);
 }
 
-function collectObjectiveEvents(world: WorldState): Array<{ type: string; payload: Record<string, unknown> }> {
+function objectiveTrainingFailure(session: Session): { reason: string; assessment: TrainingAssessment } | undefined {
+  const assessment = trainingAssessmentFor(session);
+  const reason = assessment?.metrics.hardFailures[0];
+  return reason && assessment ? { reason, assessment } : undefined;
+}
+
+function collectObjectiveEvents(session: Session): Array<{ type: string; payload: Record<string, unknown> }> {
+  const world = session.world;
   if (world.objective.status !== "active") return [];
   const friendlies = world.units.filter((unit) => unit.side === "friendly");
   const effectiveFriendlies = friendlies.filter((unit) => !isUnitInjured(unit));
@@ -3157,7 +4121,22 @@ function collectObjectiveEvents(world: WorldState): Array<{ type: string; payloa
     ];
   }
 
-  if (world.scenario.id === "cover_to_cover") {
+  const trainingFailure = objectiveTrainingFailure(session);
+  if (trainingFailure) {
+    return [
+      {
+        type: "objective_failed",
+        payload: {
+          objectiveId: world.objective.id,
+          reason: trainingFailure.reason,
+          thresholdsExceeded: trainingFailure.assessment.metrics.thresholdsExceeded,
+          metrics: trainingFailure.assessment.metrics,
+        },
+      },
+    ];
+  }
+
+  if (isCoverToCoverScenarioId(world.scenario.id)) {
     const player = effectiveFriendlies[0];
     const distance = hexDistance(player.coord, world.objective.target);
     return distance <= OBJECTIVE_SINGLE_RADIUS_HEXES
@@ -3781,7 +4760,80 @@ function occupiedHexes(world: WorldState, exceptUnitId?: string): Set<string> {
   return new Set(world.units.filter((unit) => unit.id !== exceptUnitId).map((unit) => hexKey(unit.coord)));
 }
 
+function nearestWoundedFriendly(world: WorldState, from: HexCoord): Unit | undefined {
+  return world.units
+    .filter((unit) => unit.side === "friendly" && isUnitInjured(unit))
+    .sort((a, b) => hexDistance(a.coord, from) - hexDistance(b.coord, from))[0];
+}
+
+function casualtyHelpers(world: WorldState, casualty: Unit, leaderId: string): Unit[] {
+  const candidates = world.units
+    .filter((unit) => unit.side === "friendly" && unit.id !== casualty.id && !isUnitInjured(unit))
+    .sort((a, b) => {
+      const leaderPenaltyA = a.id === leaderId ? 12 : 0;
+      const leaderPenaltyB = b.id === leaderId ? 12 : 0;
+      return (
+        leaderPenaltyA + hexDistance(a.coord, casualty.coord) + formationReceiverRank(a) * 0.01 -
+        (leaderPenaltyB + hexDistance(b.coord, casualty.coord) + formationReceiverRank(b) * 0.01)
+      );
+    });
+  return candidates.slice(0, 2);
+}
+
+function casualtyHelperAssignments(world: WorldState, casualty: Unit, helpers: Unit[]): Array<{ unit: Unit; target: HexCoord; targetPoint: MapPoint }> {
+  const reserved = new Set(world.units.filter((unit) => unit.id !== casualty.id && !helpers.some((helper) => helper.id === unit.id)).map((unit) => hexKey(unit.coord)));
+  return helpers.map((helper) => {
+    const target = nearestAvailableCoordAround(world, casualty.coord, helper.coord, reserved, 1, new Set([hexKey(casualty.coord)]));
+    reserved.add(hexKey(target));
+    return { unit: helper, target, targetPoint: axialToMapPoint(target) };
+  });
+}
+
+function helperEscortTargets(world: WorldState, collectionPoint: HexCoord, helpers: Unit[], casualtyTarget: HexCoord): Map<string, HexCoord> {
+  const reserved = new Set([hexKey(casualtyTarget)]);
+  const targets = new Map<string, HexCoord>();
+  for (const helper of helpers) {
+    const target = nearestAvailableCoordAround(world, collectionPoint, helper.coord, reserved, 1, new Set([hexKey(casualtyTarget)]));
+    reserved.add(hexKey(target));
+    targets.set(helper.id, target);
+  }
+  return targets;
+}
+
+function nearestPassableCasualtyTarget(world: WorldState, collectionPoint: HexCoord, movingUnitIds: Set<string>): HexCoord {
+  const occupied = new Set(world.units.filter((unit) => !movingUnitIds.has(unit.id)).map((unit) => hexKey(unit.coord)));
+  const tile = world.map.tilesByKey[hexKey(collectionPoint)];
+  if (inBounds(world.map, collectionPoint) && tile && !occupied.has(hexKey(collectionPoint)) && !isImpassable(tile)) {
+    return collectionPoint;
+  }
+  return nearestAvailableCoordAround(world, collectionPoint, collectionPoint, occupied, 2);
+}
+
+function nearestAvailableCoordAround(
+  world: WorldState,
+  center: HexCoord,
+  from: HexCoord,
+  reserved: Set<string>,
+  radius: number,
+  excluded: Set<string> = new Set(),
+): HexCoord {
+  return coordsWithinRadius(center, radius)
+    .filter((coord) => inBounds(world.map, coord))
+    .filter((coord) => !reserved.has(hexKey(coord)) && !excluded.has(hexKey(coord)))
+    .filter((coord) => {
+      const tile = world.map.tilesByKey[hexKey(coord)];
+      return tile && !isImpassable(tile);
+    })
+    .sort((a, b) => hexDistance(a, from) - hexDistance(b, from) || hexDistance(a, center) - hexDistance(b, center))[0] ?? center;
+}
+
 function movementRate(unit: Unit): number {
+  if (unit.status.includes("being_dragged")) {
+    return 0.35;
+  }
+  if (unit.status.includes("evac_helper")) {
+    return 0.45;
+  }
   if (isUnitInjured(unit)) {
     return 0;
   }
@@ -4051,6 +5103,7 @@ function mutableWorldForEvent(world: WorldState): WorldState {
     ...world,
     map: world.map.tilesByKey ? world.map : indexMap(world.map),
     activeFormation: world.activeFormation ? clone(world.activeFormation) : undefined,
+    casualtyEvacuation: world.casualtyEvacuation ? clone(world.casualtyEvacuation) : undefined,
     units,
     unitsById: Object.fromEntries(units.map((unit) => [unit.id, unit])),
     visibilityMemory: clone(world.visibilityMemory ?? {}),

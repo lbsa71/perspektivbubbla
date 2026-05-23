@@ -4,6 +4,8 @@ type CommunicationMethod = "voice" | "gesture" | "radio";
 type DifficultyLevel = "training" | "normal" | "realistic";
 type ScenarioId =
   | "cover_to_cover"
+  | "cover_to_cover_hasty"
+  | "cover_to_cover_observed"
   | "risk_zone_blocking"
   | "leader_lost_picture"
   | "river_bridge_crossing"
@@ -45,6 +47,29 @@ type UnitActivityProjection = {
   updatedAt?: number;
 };
 
+type CasualtyCollectionPointId = "asa1" | "asa2";
+
+type CasualtyCollectionPointProjection = {
+  id?: CasualtyCollectionPointId;
+  label?: string;
+  coord: HexCoord;
+  point?: MapPoint;
+  setAt?: number;
+};
+
+type CasualtyEvacuationProjection = {
+  collectionPointId?: CasualtyCollectionPointId;
+  activeCollectionPointId?: CasualtyCollectionPointId;
+  collectionPoints?: Partial<Record<CasualtyCollectionPointId, CasualtyCollectionPointProjection>>;
+  collectionPoint?: HexCoord;
+  collectionPointPoint?: MapPoint;
+  orderId?: string;
+  casualtyUnitId?: string;
+  helperUnitIds: string[];
+  phase: "idle" | "moving_to_casualty" | "dragging" | "completed";
+  issuedAt?: number;
+};
+
 type UnitProjection = {
   id: string;
   name: string;
@@ -75,6 +100,10 @@ type EventProjection = {
     issuerId?: string;
     formation?: Formation;
     target?: HexCoord;
+    collectionPoint?: HexCoord;
+    collectionPointId?: CasualtyCollectionPointId;
+    casualtyUnitId?: string;
+    helperUnitIds?: string[];
     targetPoint?: MapPoint;
     direction?: Direction;
     communication?: CommunicationMethod;
@@ -102,6 +131,8 @@ type EventProjection = {
       posture?: string;
       formation?: Formation;
       communication?: CommunicationMethod;
+      collectionPointId?: CasualtyCollectionPointId;
+      casualtyUnitId?: string;
     };
   };
 };
@@ -177,6 +208,65 @@ type ScenarioTroopPreview = {
   elementPosition?: number;
 };
 
+type U3TAxis = "uppgiften" | "tiden" | "truppen" | "terrangen";
+
+type U3TBrief = Record<U3TAxis, string>;
+
+type TrainingConstraints = {
+  timeLimitSeconds?: number;
+  maxExposureSamples?: { exposureAtLeast: 1 | 2 | 3; samples: number; hard?: boolean };
+  maxCumulativeExposure?: { exposure: number; hard?: boolean };
+  maxContactEvents?: number;
+  maxDetectionEvents?: number;
+  maxWounded?: number;
+};
+
+type ScenarioTraining = {
+  u3t: U3TBrief;
+  constraints?: TrainingConstraints;
+  aarFocus?: string[];
+};
+
+type TrainingMetric = {
+  id: string;
+  label: string;
+  value: string;
+  state: "good" | "warn" | "bad";
+  detail?: string;
+};
+
+type TrainingMetrics = {
+  elapsedSeconds: number;
+  distanceHexes: number;
+  exposureSamples: number;
+  highExposureSamples: number;
+  highExposureThreshold?: number;
+  severeExposureSamples: number;
+  cumulativeExposure: number;
+  contactEvents: number;
+  detectionEvents: number;
+  incomingFireEvents: number;
+  wounded: number;
+  thresholdsExceeded: string[];
+  hardFailures: string[];
+  metrics: TrainingMetric[];
+};
+
+type U3TObservation = {
+  axis: U3TAxis;
+  label: string;
+  state: "good" | "warn" | "bad";
+  text: string;
+};
+
+type TrainingAssessment = {
+  brief: U3TBrief;
+  constraints?: TrainingConstraints;
+  aarFocus: string[];
+  metrics: TrainingMetrics;
+  observations: U3TObservation[];
+};
+
 type ScenarioOption = {
   id: ScenarioId;
   title: string;
@@ -190,6 +280,7 @@ type ScenarioOption = {
   };
   defaultDifficulty: DifficultyLevel;
   recommendedFormation?: Formation;
+  training?: ScenarioTraining;
 };
 
 type DifficultyOption = {
@@ -199,6 +290,7 @@ type DifficultyOption = {
 };
 
 type Projection = {
+  sessionId: string;
   scenario: {
     id: ScenarioId;
     title: string;
@@ -212,6 +304,7 @@ type Projection = {
       target: HexCoord;
     };
     recommendedFormation?: Formation;
+    training?: ScenarioTraining;
   };
   time: number;
   activeFormation?: {
@@ -231,7 +324,9 @@ type Projection = {
     description: string;
     target: HexCoord;
     status: string;
+    constraints?: TrainingConstraints;
   };
+  casualtyEvacuation?: CasualtyEvacuationProjection;
   map: {
     tiles: HexTileProjection[];
   };
@@ -251,11 +346,13 @@ type Projection = {
   };
   aar?: {
     orderEvents?: EventProjection[];
+    u3t?: TrainingAssessment;
   };
 };
 
 type ClientState = {
   projection?: Projection;
+  gameId: string;
   scenarios: ScenarioOption[];
   difficulties: DifficultyOption[];
   selectedScenarioId?: ScenarioId;
@@ -274,6 +371,7 @@ type ClientState = {
   selectedDirection?: Direction;
   directionCue?: HexCoord;
   directionCuePoint?: MapPoint;
+  casualtyPlacementMode?: CasualtyCollectionPointId;
   showAarFeed: boolean;
   loggedDiagnostics: Set<string>;
   eventHistory: EventProjection[];
@@ -337,9 +435,11 @@ const directionVectors: Record<Direction, HexCoord> = {
 
 const directScenarioRequest = readDirectScenarioRequest();
 const initialIntroVisible = shouldShowIntro();
+const gameId = readGameId();
 
 const state: ClientState = {
   projection: undefined,
+  gameId,
   scenarios: [],
   difficulties: [],
   selectedScenarioId: directScenarioRequest?.scenarioId,
@@ -358,6 +458,7 @@ const state: ClientState = {
   selectedDirection: undefined,
   directionCue: undefined,
   directionCuePoint: undefined,
+  casualtyPlacementMode: undefined,
   showAarFeed: false,
   loggedDiagnostics: new Set(),
   eventHistory: [],
@@ -372,6 +473,7 @@ bindControls();
 renderAarFeedVisibility();
 renderProductModals();
 renderScenarioChooser();
+renderGameLink();
 
 function shouldShowIntro(): boolean {
   const introParam = new URLSearchParams(location.search).get("intro");
@@ -382,6 +484,20 @@ function shouldShowIntro(): boolean {
   } catch {
     return true;
   }
+}
+
+function readGameId(): string {
+  const params = new URLSearchParams(location.search);
+  const explicitGameId = cleanGameId(params.get("game") ?? params.get("gameId") ?? params.get("g"));
+  return explicitGameId ?? "main";
+}
+
+function cleanGameId(value: string | null | undefined): string | undefined {
+  const cleaned = (value ?? "")
+    .trim()
+    .replace(/[^A-Za-z0-9_-]/g, "")
+    .slice(0, 64);
+  return cleaned || undefined;
 }
 
 function readDirectScenarioRequest(): DirectScenarioRequest | undefined {
@@ -411,6 +527,20 @@ function scenarioIdFromUrlToken(value: string | null | undefined): ScenarioId | 
     en_soldat: "cover_to_cover",
     fran_skydd_till_skydd: "cover_to_cover",
     skydd_till_skydd: "cover_to_cover",
+    cover_hasty: "cover_to_cover_hasty",
+    cover_to_cover_hasty: "cover_to_cover_hasty",
+    hasty: "cover_to_cover_hasty",
+    tidspress: "cover_to_cover_hasty",
+    snabb: "cover_to_cover_hasty",
+    skydd_till_skydd_tidspress: "cover_to_cover_hasty",
+    fran_skydd_till_skydd_tidspress: "cover_to_cover_hasty",
+    cover_observed: "cover_to_cover_observed",
+    cover_to_cover_observed: "cover_to_cover_observed",
+    observed: "cover_to_cover_observed",
+    observerad: "cover_to_cover_observed",
+    smyg: "cover_to_cover_observed",
+    skydd_till_skydd_observerad: "cover_to_cover_observed",
+    fran_skydd_till_skydd_observerad: "cover_to_cover_observed",
     risk: "risk_zone_blocking",
     risk_zone: "risk_zone_blocking",
     risk_zone_blocking: "risk_zone_blocking",
@@ -517,7 +647,7 @@ function connect() {
 function websocketUrl(): string {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const host = location.port === "5173" ? devBackendHost() : location.host;
-  return `${protocol}//${host}/ws`;
+  return `${protocol}//${host}/ws?game=${encodeURIComponent(state.gameId)}`;
 }
 
 function devBackendHost(): string {
@@ -745,6 +875,21 @@ function bindControls() {
     if (commandTarget.dataset.command === "halt") {
       issueHaltOrder();
     }
+    if (commandTarget.dataset.command === "set-casualty-point") {
+      const collectionPointId = isCasualtyCollectionPointId(commandTarget.dataset.casualtyPoint)
+        ? commandTarget.dataset.casualtyPoint
+        : "asa1";
+      state.casualtyPlacementMode = state.casualtyPlacementMode === collectionPointId ? undefined : collectionPointId;
+      console.info("[casualty] ÅSA placement mode", {
+        active: Boolean(state.casualtyPlacementMode),
+        collectionPointId: state.casualtyPlacementMode,
+      });
+      renderControls();
+      render();
+    }
+    if (commandTarget.dataset.command === "evacuate-casualty") {
+      issueCasualtyEvacuationOrder();
+    }
     if (
       commandTarget.dataset.command === "communication" &&
       isCommunication(commandTarget.dataset.communication)
@@ -845,6 +990,22 @@ function handleMapHexClick(event: MouseEvent): void {
     console.info("[hex-click] resolved by geometry", { target });
   }
   console.log("[hex-click] accepted", { target, source });
+
+  if (state.casualtyPlacementMode && projection.player.role === "leader") {
+    const collectionPointId = state.casualtyPlacementMode;
+    send({
+      type: "set_casualty_collection_point",
+      unitId: projection.player.id,
+      collectionPointId,
+      target,
+      issuedAt: projection.time,
+    });
+    state.casualtyPlacementMode = undefined;
+    console.info("[casualty] ÅSA set", { collectionPointId, label: casualtyCollectionPointLabel(collectionPointId), target });
+    showHexTooltip(projection, target, event.clientX, event.clientY);
+    renderControls();
+    return;
+  }
 
   if (projection.player.role === "leader" && (!isEmbodiedAdvanceActive(projection) || event.shiftKey)) {
     const result = setDirectionCue(target, projection);
@@ -964,6 +1125,7 @@ function render(): void {
 
   document.body.dataset.difficulty = projection.scenario.difficulty;
   document.querySelector("#time").textContent = `t=${projection.time.toFixed(1)}`;
+  renderGameLink();
   renderInfoWords(projection);
   renderGroup(projection);
   renderDebrief(projection);
@@ -975,6 +1137,19 @@ function render(): void {
   renderProductModals();
   renderScenarioChooser();
   renderMap(projection);
+}
+
+function renderGameLink(): void {
+  const link = document.querySelector("#game-link");
+  if (!(link instanceof HTMLAnchorElement)) return;
+  const href = gameHref();
+  link.href = href;
+  link.textContent = `spel ${state.gameId}`;
+  link.title = `Dela spel ${state.gameId}`;
+}
+
+function gameHref(): string {
+  return `/?game=${encodeURIComponent(state.gameId)}&intro=0`;
 }
 
 function renderAarFeedVisibility(): void {
@@ -1255,6 +1430,7 @@ function renderDebrief(projection: Projection): void {
         )
         .join("")}
     </div>
+    ${renderU3TDebrief(projection.aar?.u3t)}
     <div class="lesson-list">
       <strong>Lärpunkter</strong>
       <ul>
@@ -1279,6 +1455,7 @@ function buildDebriefSummary(projection: Projection): DebriefSummary {
   const coverageGaps = events.filter((event) => event.type === "tat_coverage_gap").length + projection.risk.coverage.filter((check) => !check.covered).length;
   const contacts = events.filter((event) => event.type === "contact_pressure_emitted" || event.type === "probabilistic_detection_resolved").length;
   const orderRatio = deliveries.length > 0 ? received / deliveries.length : 0;
+  const trainingAssessment = projection.aar?.u3t;
 
   let score = 100;
   score -= Math.min(25, distance * 2);
@@ -1288,22 +1465,42 @@ function buildDebriefSummary(projection: Projection): DebriefSummary {
   score -= Math.min(14, coverageGaps * 3);
   score -= Math.min(18, contacts * 6);
   score -= projection.time > 90 ? 8 : projection.time > 45 ? 3 : 0;
+  if (trainingAssessment) {
+    const hardFailures = trainingAssessment.metrics.hardFailures.length;
+    const softThresholds = Math.max(0, trainingAssessment.metrics.thresholdsExceeded.length - hardFailures);
+    score -= Math.min(30, hardFailures * 15 + softThresholds * 5);
+  }
   score = clamp(score, 0, 100);
 
-  const metrics: DebriefSummary["metrics"] = [
-    { label: "Målavstånd", value: `${distance} hex`, state: distance <= 3 ? "good" : distance <= 10 ? "warn" : "bad" },
-    {
-      label: "Orderkedja",
-      value: deliveries.length > 0 ? `${received}/${deliveries.length}` : "ingen",
-      state: deliveries.length > 0 && orderRatio === 1 ? "good" : deliveries.length > 0 && orderRatio >= 0.75 ? "warn" : "bad",
-    },
-    { label: "Väntan", value: String(waits), state: waits === 0 ? "good" : waits <= 4 ? "warn" : "bad" },
-    { label: "Blockering", value: String(blocks), state: blocks === 0 ? "good" : blocks <= 3 ? "warn" : "bad" },
-    { label: "Täckningsgap", value: String(coverageGaps), state: coverageGaps === 0 ? "good" : coverageGaps <= 2 ? "warn" : "bad" },
-    { label: "Kontakttryck", value: String(contacts), state: contacts === 0 ? "good" : "bad" },
-  ];
+  const metrics: DebriefSummary["metrics"] =
+    trainingAssessment?.metrics.metrics.length
+      ? trainingAssessment.metrics.metrics.slice(0, 6).map((metric) => ({
+          label: metric.label,
+          value: metric.value,
+          state: metric.state,
+        }))
+      : [
+          { label: "Målavstånd", value: `${distance} hex`, state: distance <= 3 ? "good" : distance <= 10 ? "warn" : "bad" },
+          {
+            label: "Orderkedja",
+            value: deliveries.length > 0 ? `${received}/${deliveries.length}` : "ingen",
+            state: deliveries.length > 0 && orderRatio === 1 ? "good" : deliveries.length > 0 && orderRatio >= 0.75 ? "warn" : "bad",
+          },
+          { label: "Väntan", value: String(waits), state: waits === 0 ? "good" : waits <= 4 ? "warn" : "bad" },
+          { label: "Blockering", value: String(blocks), state: blocks === 0 ? "good" : blocks <= 3 ? "warn" : "bad" },
+          { label: "Täckningsgap", value: String(coverageGaps), state: coverageGaps === 0 ? "good" : coverageGaps <= 2 ? "warn" : "bad" },
+          { label: "Kontakttryck", value: String(contacts), state: contacts === 0 ? "good" : "bad" },
+        ];
 
   const lessons: string[] = [];
+  if (trainingAssessment) {
+    const routeFinding = trainingAssessment.observations.find((observation) => observation.state === "bad")
+      ?? trainingAssessment.observations.find((observation) => observation.state === "warn");
+    if (routeFinding) lessons.push(`${routeFinding.label}: ${routeFinding.text}`);
+    if (trainingAssessment.metrics.thresholdsExceeded.length > 0) {
+      lessons.push(`Gränser passerade: ${trainingAssessment.metrics.thresholdsExceeded.map(displayThresholdReason).join(", ")}.`);
+    }
+  }
   if (!state.selectedDirection) lessons.push("Sätt riktning innan formation och framåt så tätens linje får en tydlig referens.");
   if (issuedOrders.length === 0) lessons.push("Ge en formationsorder före framåt, så orderkedjan syns i debriefen.");
   if (deliveries.length > 0 && orderRatio < 1) lessons.push("Alla uppfattade inte ordern. Byt metod, minska avstånd eller använd radio när läget kräver det.");
@@ -1320,6 +1517,94 @@ function buildDebriefSummary(projection: Projection): DebriefSummary {
     metrics,
     lessons: lessons.slice(0, 4),
   };
+}
+
+function renderU3TDebrief(assessment: TrainingAssessment | undefined): string {
+  if (!assessment) return "";
+  return `
+    <div class="u3t-debrief">
+      <strong>U3T</strong>
+      <div class="u3t-observations">
+        ${assessment.observations
+          .map(
+            (observation) => `<div class="u3t-observation metric-${observation.state}">
+              <span>${escapeHtml(observation.label)}</span>
+              <p>${escapeHtml(observation.text)}</p>
+            </div>`,
+          )
+          .join("")}
+      </div>
+    </div>`;
+}
+
+function displayThresholdReason(reason: string): string {
+  const labels: Record<string, string> = {
+    time_limit_exceeded: "tid",
+    exposure_threshold_exceeded: "exponering",
+    cumulative_exposure_exceeded: "ackumulerad risk",
+    contact_threshold_exceeded: "kontakt",
+    detection_threshold_exceeded: "upptäckt",
+    casualty_threshold_exceeded: "skada",
+  };
+  return labels[reason] ?? reason;
+}
+
+function renderScenarioU3T(training: ScenarioTraining | undefined): string {
+  if (!training) return "";
+  const axes: U3TAxis[] = ["uppgiften", "tiden", "truppen", "terrangen"];
+  const constraints = trainingConstraintLines(training.constraints);
+  return `
+    <section class="scenario-u3t" aria-label="U3T">
+      <h3>U3T</h3>
+      <div class="scenario-u3t-grid">
+        ${axes
+          .map(
+            (axis) => `<div>
+              <span>${escapeHtml(displayU3TAxis(axis))}</span>
+              <p>${escapeHtml(training.u3t[axis])}</p>
+            </div>`,
+          )
+          .join("")}
+      </div>
+      ${
+        constraints.length > 0
+          ? `<div class="scenario-thresholds">
+              <span>Gränser</span>
+              <p>${constraints.map(escapeHtml).join("<br>")}</p>
+            </div>`
+          : ""
+      }
+    </section>`;
+}
+
+function trainingConstraintLines(constraints: TrainingConstraints | undefined): string[] {
+  if (!constraints) return [];
+  const lines: string[] = [];
+  if (constraints.timeLimitSeconds !== undefined) lines.push(`tid: ${constraints.timeLimitSeconds} s`);
+  if (constraints.maxExposureSamples) {
+    lines.push(
+      `exponering: max ${constraints.maxExposureSamples.samples} prov på nivå ${constraints.maxExposureSamples.exposureAtLeast}+${
+        constraints.maxExposureSamples.hard ? " (hård)" : ""
+      }`,
+    );
+  }
+  if (constraints.maxCumulativeExposure) {
+    lines.push(`ackumulerad risk: max ${constraints.maxCumulativeExposure.exposure}${constraints.maxCumulativeExposure.hard ? " (hård)" : ""}`);
+  }
+  if (constraints.maxDetectionEvents !== undefined) lines.push(`upptäckter: max ${constraints.maxDetectionEvents}`);
+  if (constraints.maxContactEvents !== undefined) lines.push(`kontakttryck: max ${constraints.maxContactEvents}`);
+  if (constraints.maxWounded !== undefined) lines.push(`skadade: max ${constraints.maxWounded}`);
+  return lines;
+}
+
+function displayU3TAxis(axis: U3TAxis): string {
+  const labels: Record<U3TAxis, string> = {
+    uppgiften: "Uppgiften",
+    tiden: "Tiden",
+    truppen: "Truppen",
+    terrangen: "Terrängen",
+  };
+  return labels[axis];
 }
 
 function renderScenarioChooser(): void {
@@ -1410,6 +1695,7 @@ function renderScenarioChooser(): void {
               <strong>${escapeHtml(firstOrderHint(selectedScenario, activeDifficulty))}</strong>
             </div>
           </div>
+          ${renderScenarioU3T(selectedScenario.training)}
           <div class="scenario-columns">
             <div>
               <h3>Trupp</h3>
@@ -1450,7 +1736,7 @@ async function startSelectedScenario(source = "picker"): Promise<void> {
       difficulty: state.selectedDifficulty,
       source,
     });
-    const response = await fetch("/api/session", {
+    const response = await fetch(sessionApiUrl(), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1488,6 +1774,10 @@ async function startSelectedScenario(source = "picker"): Promise<void> {
     state.startingScenario = false;
     renderScenarioChooser();
   }
+}
+
+function sessionApiUrl(): string {
+  return `/api/session?game=${encodeURIComponent(state.gameId)}`;
 }
 
 function renderMapIfReady(): void {
@@ -1564,6 +1854,25 @@ function renderControls(): void {
     button.setAttribute("aria-pressed", String(selected));
     button.setAttribute("aria-selected", String(selected));
   });
+  document.querySelectorAll("[data-command='set-casualty-point']").forEach((button) => {
+    if (!(button instanceof HTMLElement)) return;
+    const collectionPointId = isCasualtyCollectionPointId(button.dataset.casualtyPoint) ? button.dataset.casualtyPoint : "asa1";
+    const selected = state.casualtyPlacementMode === collectionPointId;
+    button.classList.toggle("is-active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+    button.title = selected ? `Klicka en hex för ${casualtyCollectionPointLabel(collectionPointId)}` : `Välj ${casualtyCollectionPointLabel(collectionPointId)}`;
+  });
+  document.querySelectorAll("[data-command='evacuate-casualty']").forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return;
+    const hasWounded = Boolean(state.projection?.units.some((unit) => unit.side === "friendly" && (unit.posture === "injured" || unit.status.includes("injured"))));
+    const hasCollectionPoint = Boolean(state.projection && selectedCasualtyCollectionPoint(state.projection));
+    button.disabled = !hasWounded || !hasCollectionPoint;
+    button.title = !hasWounded
+      ? "Ingen skadad soldat"
+      : !hasCollectionPoint
+        ? "Sätt ÅSA1 eller ÅSA2 först"
+        : "Två närmaste stridsdugliga soldater omhändertar skadad";
+  });
   renderGestureHints();
 }
 
@@ -1613,6 +1922,7 @@ function renderMap(projection: Projection): void {
     .join("");
   const terrainIconMarkup = renderTerrainIcons(tiles, size);
   const objectiveMarkup = renderObjectiveMarker(projection, size);
+  const casualtyMarkup = renderCasualtyCollectionMarker(projection, size);
   const orderRangeMarkup =
     projection.player.role === "leader"
       ? `<circle class="order-range ${state.selectedCommunication}" cx="${playerPoint.x}" cy="${playerPoint.y}" r="${orderRangePixels(size)}"></circle>`
@@ -1658,7 +1968,7 @@ function renderMap(projection: Projection): void {
     .join("");
 
   svg.setAttribute("viewBox", `${state.pan.x} ${state.pan.y} ${svg.clientWidth || 800} ${svg.clientHeight || 600}`);
-  svg.innerHTML = `<g>${tileMarkup}${terrainIconMarkup}${effectZoneMarkup}${orderRangeMarkup}${objectiveMarkup}${directionCueMarkup}${blockingMarkup}${intentMarkup}${unitMarkup}</g>`;
+  svg.innerHTML = `<g>${tileMarkup}${terrainIconMarkup}${effectZoneMarkup}${orderRangeMarkup}${objectiveMarkup}${casualtyMarkup}${directionCueMarkup}${blockingMarkup}${intentMarkup}${unitMarkup}</g>`;
 
   svg.querySelectorAll(".hex, .objective-hitbox").forEach((hex) => {
     hex.addEventListener("pointerenter", (event) => {
@@ -1837,8 +2147,64 @@ function issueHaltOrder(): void {
   });
 }
 
+function issueCasualtyEvacuationOrder(): void {
+  const projection = state.projection;
+  if (!projection || projection.player.role !== "leader") return;
+  const casualty = projection.units.find((unit) => unit.side === "friendly" && (unit.posture === "injured" || unit.status.includes("injured")));
+  const collectionPoint = selectedCasualtyCollectionPoint(projection);
+  send({
+    type: "start_casualty_evacuation",
+    unitId: projection.player.id,
+    collectionPointId: collectionPoint?.id,
+    casualtyUnitId: casualty?.id,
+    target: collectionPoint?.coord,
+    issuedAt: projection.time,
+  });
+}
+
 function selectedOrderDirection(projection: Projection): Direction {
   return state.selectedDirection ?? projection.activeFormation?.direction ?? projection.player.facing;
+}
+
+function casualtyCollectionPointLabel(id: CasualtyCollectionPointId | undefined): string {
+  return id === "asa2" ? "ÅSA2" : "ÅSA1";
+}
+
+function isCasualtyCollectionPointId(value: string | undefined): value is CasualtyCollectionPointId {
+  return value === "asa1" || value === "asa2";
+}
+
+function casualtyCollectionPoints(projection: Projection): CasualtyCollectionPointProjection[] {
+  const evacuation = projection.casualtyEvacuation;
+  if (!evacuation) return [];
+  const points = (["asa1", "asa2"] as const)
+    .map((id) => evacuation.collectionPoints?.[id])
+    .filter((point): point is CasualtyCollectionPointProjection => Boolean(point?.coord));
+  if (points.length > 0) return points;
+  if (!evacuation.collectionPoint) return [];
+  const id = evacuation.collectionPointId ?? evacuation.activeCollectionPointId ?? "asa1";
+  return [{
+    id,
+    label: casualtyCollectionPointLabel(id),
+    coord: evacuation.collectionPoint,
+    point: evacuation.collectionPointPoint,
+  }];
+}
+
+function selectedCasualtyCollectionPoint(projection: Projection): CasualtyCollectionPointProjection | undefined {
+  const evacuation = projection.casualtyEvacuation;
+  if (!evacuation) return undefined;
+  const id = evacuation.activeCollectionPointId ?? evacuation.collectionPointId;
+  const points = casualtyCollectionPoints(projection);
+  return points.find((point) => point.id === id) ?? points[0];
+}
+
+function formatCasualtyCollectionPoints(projection: Projection): string {
+  const points = casualtyCollectionPoints(projection);
+  if (points.length === 0) return "ÅSA: ej satt";
+  return points
+    .map((point) => `${casualtyCollectionPointLabel(point.id)} ${point.coord.q},${point.coord.r}`)
+    .join(" / ");
 }
 
 function selectedDirectionTarget(projection: Projection): HexCoord {
@@ -2050,8 +2416,20 @@ function goalDetails(projection: Projection): string {
     `målhex: ${projection.objective.target.q},${projection.objective.target.r}`,
     `status: ${displayObjectiveStatus(projection.objective.status)}`,
     objectiveCriteria(projection),
+    ...trainingGoalDetails(projection),
     objectiveDescription(projection.objective.description),
   ].join("\n");
+}
+
+function trainingGoalDetails(projection: Projection): string[] {
+  const training = projection.scenario.training;
+  if (!training) return [];
+  const constraints = trainingConstraintLines(projection.objective.constraints ?? training.constraints);
+  return [
+    `U3T uppgift: ${training.u3t.uppgiften}`,
+    `U3T tid: ${training.u3t.tiden}`,
+    constraints.length > 0 ? `gränser: ${constraints.join("; ")}` : "",
+  ].filter(Boolean);
 }
 
 function orderDetails(projection: Projection): string {
@@ -2090,7 +2468,11 @@ function orderDetails(projection: Projection): string {
     .reverse()
     .map((event) => `${event.time.toFixed(1)} hör ${event.approximateDirection} ${displayClarity(event.clarity)}: ${event.text}`)
     .join("\n");
-  return [current, recent, heard ? `hörsel/rapporter:\n${heard}` : ""].filter(Boolean).join("\n");
+  const casualtyPoint = selectedCasualtyCollectionPoint(projection);
+  const casualty = casualtyPoint && projection.casualtyEvacuation
+    ? `sjukvård: ${casualtyCollectionPointLabel(casualtyPoint.id)} ${casualtyPoint.coord.q},${casualtyPoint.coord.r} ${displayCasualtyPhase(projection.casualtyEvacuation.phase)}`
+    : "";
+  return [current, casualty, recent, heard ? `hörsel/rapporter:\n${heard}` : ""].filter(Boolean).join("\n");
 }
 
 function formatOrderEvent(event: EventProjection): string {
@@ -2106,6 +2488,18 @@ function formatOrderEvent(event: EventProjection): string {
   }
   if (event.type === "formation_movement_diagnostic") {
     return `${event.time.toFixed(1)} diagnos ${displayReason(event.payload?.reason)}`;
+  }
+  if (event.type === "casualty_collection_point_set") {
+    return `${event.time.toFixed(1)} ${casualtyCollectionPointLabel(event.payload?.collectionPointId)} ${event.payload?.target?.q ?? "?"},${event.payload?.target?.r ?? "?"}`;
+  }
+  if (event.type === "casualty_evacuation_started") {
+    return `${event.time.toFixed(1)} omhändertar ${displayUnitId(event.payload?.casualtyUnitId)}`;
+  }
+  if (event.type === "casualty_drag_started") {
+    return `${event.time.toFixed(1)} släpar ${displayUnitId(event.payload?.casualtyUnitId)} mot ${casualtyCollectionPointLabel(event.payload?.collectionPointId)}`;
+  }
+  if (event.type === "casualty_evacuation_completed") {
+    return `${event.time.toFixed(1)} ${displayUnitId(event.payload?.casualtyUnitId)} vid ${casualtyCollectionPointLabel(event.payload?.collectionPointId)}`;
   }
   if (event.type === "order_delivery_resolved") {
     const relayText = event.payload?.relayedBy ? ` via ${displayUnitId(event.payload.relayedBy)}` : "";
@@ -2199,6 +2593,9 @@ function unitDetails(unit: UnitProjection, projection: Projection): string {
     `metod: ${displayCommunication(state.selectedCommunication)}`,
     `riktning: ${directionCue}`,
     `målhex: ${projection.objective.target.q},${projection.objective.target.r}`,
+    projection.casualtyEvacuation
+      ? `${formatCasualtyCollectionPoints(projection)} (${displayCasualtyPhase(projection.casualtyEvacuation.phase)})`
+      : "ÅSA: ej satt",
   ].join("\n");
 }
 
@@ -2240,6 +2637,16 @@ function shortActivity(unit: UnitProjection): string {
   if (activity.state === "injured") return "skadad";
   if (activity.state === "holding" && activity.reason !== "no_order") return "håller";
   return "";
+}
+
+function displayCasualtyPhase(phase: CasualtyEvacuationProjection["phase"] | undefined): string {
+  const labels: Record<CasualtyEvacuationProjection["phase"], string> = {
+    idle: "redo",
+    moving_to_casualty: "soldater går till skadad",
+    dragging: "släpar skadad",
+    completed: "omhändertagen",
+  };
+  return phase ? (labels[phase] ?? phase) : "-";
 }
 
 function activityTone(unit: UnitProjection): "ready" | "wait" | "warning" {
@@ -2315,8 +2722,11 @@ function displayObjectiveStatus(status: string): string {
 }
 
 function objectiveCriteria(projection: Projection): string {
-  if (projection.scenario.id === "cover_to_cover") {
-    return "krav: soldaten inom 1 hex från målhexen";
+  if (isCoverToCoverScenarioId(projection.scenario.id)) {
+    const constraints = trainingConstraintLines(projection.objective.constraints);
+    return ["krav: soldaten inom 1 hex från målhexen", constraints.length > 0 ? `träningsgränser: ${constraints.join("; ")}` : ""]
+      .filter(Boolean)
+      .join("\n");
   }
   if (projection.scenario.id === "risk_zone_blocking") {
     return "krav: båda stridsdugliga soldater inom 2 hex från målhexen";
@@ -2331,6 +2741,10 @@ function objectiveCriteria(projection: Projection): string {
   const leader = effective.find((unit) => unit.role === "leader");
   const leaderArrived = leader ? hexDistance(leader.coord, projection.objective.target) <= 3 : false;
   return `krav: grpc + ${required}/${effective.length} stridsdugliga inom 3 hex (nu ${leaderArrived ? "grpc framme" : "grpc ej framme"}, ${arrived}/${effective.length})`;
+}
+
+function isCoverToCoverScenarioId(id: ScenarioId): boolean {
+  return id === "cover_to_cover" || id === "cover_to_cover_hasty" || id === "cover_to_cover_observed";
 }
 
 function displayReceptionStatus(status: string | undefined): string {
@@ -2355,6 +2769,20 @@ function displayReason(reason: string | undefined): string {
     halt_order: "haltorder",
     posture_change: "ändrad kroppsställning",
     formation_motivation: "grupperingsrörelse",
+    casualty_evacuation: "omhänderta skadad",
+    casualty_collection_requires_leader: "bara gruppchef kan sätta ÅSA",
+    casualty_collection_not_passable: "ÅSA är inte framkomlig",
+    casualty_evacuation_requires_leader: "bara gruppchef kan omhänderta skadad",
+    casualty_collection_missing: "sätt ÅSA först",
+    no_wounded_soldier: "ingen skadad soldat hittad",
+    not_enough_helpers: "för få stridsdugliga hjälpare",
+    moving_to_casualty: "går till skadad",
+    casualty_drag: "släpas mot ÅSA",
+    casualty_drag_wait: "inväntar släpning",
+    casualty_helper_drag: "hjälper skadad mot ÅSA",
+    casualty_helper_wait: "hjälper skadad",
+    no_path_to_casualty: "ingen väg till skadad",
+    no_path_to_casualty_collection: "ingen väg till ÅSA",
     moving_to_order_target: "rör sig mot ordermål",
     moving_to_selected_hex: "rör sig mot vald hex",
     moving_to_target: "rör sig mot mål",
@@ -2386,6 +2814,12 @@ function displayReason(reason: string | undefined): string {
     team_reached_objective: "paret nådde målområdet",
     player_reached_objective: "soldaten nådde målet",
     no_effective_friendlies: "ingen stridsduglig kvar",
+    time_limit_exceeded: "tidsgräns passerad",
+    exposure_threshold_exceeded: "exponeringsgräns passerad",
+    cumulative_exposure_exceeded: "riskgräns passerad",
+    contact_threshold_exceeded: "kontaktgräns passerad",
+    detection_threshold_exceeded: "upptäcktsgräns passerad",
+    casualty_threshold_exceeded: "skadegräns passerad",
   };
   return labels[reason] ?? reason.replaceAll("_", " ");
 }
@@ -2467,6 +2901,8 @@ function displayCommandType(type: string): string {
     issue_formation_order: "formationsorder",
     issue_forward_order: "framåtorder",
     halt_group: "haltorder",
+    set_casualty_collection_point: "sätt ÅSA",
+    start_casualty_evacuation: "omhänderta skadad",
     command_accepted: "order accepterad",
     command_rejected: "order nekad",
   };
@@ -2489,6 +2925,18 @@ function formatTimelineEvent(event: EventProjection): string {
   }
   if (event.type === "formation_advance_started") {
     return `framryckning startar ${event.payload?.direction ?? "?"}`;
+  }
+  if (event.type === "casualty_collection_point_set") {
+    return `${casualtyCollectionPointLabel(event.payload?.collectionPointId)} satt ${event.payload?.target?.q ?? "?"},${event.payload?.target?.r ?? "?"}`;
+  }
+  if (event.type === "casualty_evacuation_started") {
+    return `omhändertar ${displayUnitId(event.payload?.casualtyUnitId)}`;
+  }
+  if (event.type === "casualty_drag_started") {
+    return `släpar ${displayUnitId(event.payload?.casualtyUnitId)} mot ${casualtyCollectionPointLabel(event.payload?.collectionPointId)}`;
+  }
+  if (event.type === "casualty_evacuation_completed") {
+    return `${displayUnitId(event.payload?.casualtyUnitId)} vid ${casualtyCollectionPointLabel(event.payload?.collectionPointId)}`;
   }
   if (event.type === "order_delivery_resolved") {
     return `${displayUnitId(event.payload?.unitId)} ${displayReceptionStatus(event.payload?.status)} ${displayReason(event.payload?.reason)}`;
@@ -2567,6 +3015,23 @@ function renderObjectiveMarker(projection: Projection, size: number): string {
   </g>`;
 }
 
+function renderCasualtyCollectionMarker(projection: Projection, size: number): string {
+  const phase = projection.casualtyEvacuation?.phase ?? "idle";
+  const activeId = projection.casualtyEvacuation?.activeCollectionPointId ?? projection.casualtyEvacuation?.collectionPointId;
+  return casualtyCollectionPoints(projection)
+    .map((point) => {
+      const target = axialToPixel(point.coord, size);
+      const id = point.id ?? "asa1";
+      const activeClass = id === activeId ? " is-active" : "";
+      return `<g class="casualty-point casualty-${phase} casualty-${id}${activeClass}">
+        <circle cx="${target.x}" cy="${target.y}" r="${size * 0.78}"></circle>
+        <path d="M ${target.x - size * 0.36} ${target.y} L ${target.x + size * 0.36} ${target.y} M ${target.x} ${target.y - size * 0.36} L ${target.x} ${target.y + size * 0.36}"></path>
+        <text x="${target.x + size * 1.05}" y="${target.y + size * 0.25}">${casualtyCollectionPointLabel(id)}</text>
+      </g>`;
+    })
+    .join("");
+}
+
 function renderDirectionCue(projection: Projection, size: number): string {
   if (projection.player.role !== "leader") return "";
   const direction = state.selectedDirection;
@@ -2588,6 +3053,8 @@ function send(command: {
   direction?: string;
   posture?: string;
   target?: HexCoord;
+  collectionPointId?: CasualtyCollectionPointId;
+  casualtyUnitId?: string;
   directionTarget?: HexCoord;
   directionTargetPoint?: MapPoint;
   formation?: Formation;
@@ -2609,6 +3076,8 @@ function isCommunication(value: string | undefined): value is CommunicationMetho
 function isScenarioId(value: string | undefined): value is ScenarioId {
   return (
     value === "cover_to_cover" ||
+    value === "cover_to_cover_hasty" ||
+    value === "cover_to_cover_observed" ||
     value === "risk_zone_blocking" ||
     value === "leader_lost_picture" ||
     value === "river_bridge_crossing" ||
@@ -2679,6 +3148,8 @@ function displayScenarioRole(unit: ScenarioTroopPreview): string {
 function scenarioLesson(id: ScenarioId): string {
   const lessons: Record<ScenarioId, string> = {
     cover_to_cover: "Enskild rörelse, sikt, skydd och exponering.",
+    cover_to_cover_hasty: "Enskild rörelse under tidspress: när fart väger tyngre än skydd.",
+    cover_to_cover_observed: "Enskild rörelse genom observerad terräng med hårda exponeringsgränser.",
     risk_zone_blocking: "Två soldater, effektzoner och hur kamrater blockerar varandra.",
     leader_lost_picture: "Gruppchef: riktning, orderkedja, tät, sammanhållning och tappad lägesbild.",
     river_bridge_crossing: "Flaskhalsar, broövergång och opasserbar terräng.",
@@ -2689,6 +3160,8 @@ function scenarioLesson(id: ScenarioId): string {
 
 function firstOrderHint(scenario: Pick<ScenarioOption, "id" | "recommendedFormation">, difficulty: DifficultyLevel): string {
   if (scenario.id === "cover_to_cover") return "Klicka skyddad terräng, spana med Q/E.";
+  if (scenario.id === "cover_to_cover_hasty") return "Välj snabb rutt, bryt exponering när den blir dyr.";
+  if (scenario.id === "cover_to_cover_observed") return "Håll låg exponering, använd dike och skog före vägen.";
   if (scenario.id === "risk_zone_blocking") return "Orientera båda soldaterna och undvik blockerad effektzon.";
   const formation = displayFormation(scenario.recommendedFormation ?? "line");
   const hint = difficulty === "training" ? "teckenhjälp syns" : difficulty === "normal" ? "tecken utan text" : "kort minne";
@@ -2706,12 +3179,14 @@ function displayDifficulty(difficulty: DifficultyLevel): string {
 
 function directScenarioHref(scenarioId: ScenarioId, difficulty: DifficultyLevel): string {
   const path = `/scenario/${scenarioUrlSlug(scenarioId)}/${difficultyUrlSlug(difficulty)}`;
-  return `${path}?intro=0`;
+  return `${path}?intro=0&game=${encodeURIComponent(state.gameId)}`;
 }
 
 function scenarioUrlSlug(scenarioId: ScenarioId): string {
   const slugs: Record<ScenarioId, string> = {
     cover_to_cover: "skydd-till-skydd",
+    cover_to_cover_hasty: "skydd-till-skydd-tidspress",
+    cover_to_cover_observed: "skydd-till-skydd-observerad",
     risk_zone_blocking: "riskzon",
     leader_lost_picture: "skadad-soldat",
     river_bridge_crossing: "broovergang",

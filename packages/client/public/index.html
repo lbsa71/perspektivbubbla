@@ -18,6 +18,7 @@
           <button type="button" data-command="toggle-help">Hjälp</button>
           <button type="button" data-command="toggle-orientation" aria-pressed="true">Orientering</button>
           <button type="button" data-command="open-scenario">Scenario</button>
+          <a id="game-link" class="game-link" href="/?game=main&intro=0" title="Dela detta spel">spel main</a>
           <span id="connection">FRÅNKOPPLAD</span>
           <span id="time">t=0.0</span>
           <button
@@ -149,6 +150,13 @@
               <button data-command="forward">Framåt!</button>
               <button data-command="halt">Halt!</button>
             </div>
+          </div>
+
+          <h2>Sjukvård</h2>
+          <div class="controls casualty-controls" aria-label="Sjukvårdsorder">
+            <button data-command="set-casualty-point" data-casualty-point="asa1">Sätt ÅSA1</button>
+            <button data-command="set-casualty-point" data-casualty-point="asa2">Sätt ÅSA2</button>
+            <button data-command="evacuate-casualty">Släpa skadad</button>
           </div>
         </aside>
 

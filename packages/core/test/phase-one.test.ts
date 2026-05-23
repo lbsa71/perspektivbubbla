@@ -26,9 +26,12 @@ test("phase one scenario is deterministic and uses a 100x100 map at 3m per hex",
 test("scenario options expose troop, goal, and selectable difficulty-backed setup", () => {
   const scenarios = listScenarioOptions();
   assert.ok(scenarios.some((scenario) => scenario.id === "cover_to_cover" && scenario.troop.length === 1));
+  assert.ok(scenarios.some((scenario) => scenario.id === "cover_to_cover_hasty" && scenario.training?.constraints?.timeLimitSeconds === 55));
+  assert.ok(scenarios.some((scenario) => scenario.id === "cover_to_cover_observed" && scenario.training?.constraints?.maxExposureSamples?.hard === true));
   assert.ok(scenarios.some((scenario) => scenario.id === "leader_lost_picture" && scenario.troop.length === 8));
   assert.ok(scenarios.some((scenario) => scenario.id === "river_bridge_crossing" && scenario.recommendedFormation === "file"));
   assert.ok(scenarios.some((scenario) => scenario.id === "ditch_line_contact" && scenario.troop.length === 8));
+  assert.equal(scenarios.filter((scenario) => scenario.id.startsWith("cover_to_cover")).length, 3);
 
   const session = createPhaseOneSession({
     seed: "scenario-picker",
@@ -43,6 +46,64 @@ test("scenario options expose troop, goal, and selectable difficulty-backed setu
   assert.equal(projection.player.role, "leader");
   assert.equal(session.world.units.filter((unit) => unit.side === "friendly").length, 2);
   assert.deepEqual(projection.objective.target, { q: 24, r: 50 });
+});
+
+test("cover-to-cover training scenarios project U3T brief and AAR metrics", () => {
+  const session = createPhaseOneSession({
+    seed: "u3t-projection",
+    scenarioId: "cover_to_cover_observed",
+    difficulty: "training",
+    overrides: { opposing: [] },
+  });
+  const projection = projectSession(session);
+
+  assert.equal(projection.scenario.training?.u3t.uppgiften.includes("Nå målskyddet"), true);
+  assert.equal(projection.objective.constraints?.maxDetectionEvents, 0);
+  assert.equal(projection.aar.u3t?.brief.tiden.includes("Ingen fast tidsgräns"), true);
+  assert.equal(projection.aar.u3t?.metrics.detectionEvents, 0);
+  assert.equal(projection.aar.u3t?.observations.length, 4);
+});
+
+test("hasty cover-to-cover scenario fails when the timer threshold is exceeded", () => {
+  let session = createPhaseOneSession({
+    seed: "hasty-timeout",
+    scenarioId: "cover_to_cover_hasty",
+    difficulty: "training",
+    overrides: { opposing: [] },
+  });
+
+  session = advanceSession(session, 56, { random: () => 1 });
+  const failure = session.events.find((event) => event.type === "objective_failed");
+  const projection = projectSession(session);
+
+  assert.equal(session.world.objective.status, "failed");
+  assert.equal(failure?.payload.reason, "time_limit_exceeded");
+  assert.ok(projection.aar.u3t?.metrics.hardFailures.includes("time_limit_exceeded"));
+});
+
+test("observed cover-to-cover scenario fails on hard exposure thresholds", () => {
+  let session = createPhaseOneSession({
+    seed: "observed-exposure",
+    scenarioId: "cover_to_cover_observed",
+    difficulty: "training",
+    overrides: {
+      opposing: [],
+      player: { posture: "standing" },
+      terrainPatches: [{ coord: { q: 8, r: 50 }, terrain: "field" }],
+    },
+  });
+
+  for (let step = 0; step < 9 && session.world.objective.status === "active"; step += 1) {
+    session = advanceSession(session, 1, { random: () => 1 });
+  }
+
+  const failure = session.events.find((event) => event.type === "objective_failed");
+  const projection = projectSession(session);
+
+  assert.equal(session.world.objective.status, "failed");
+  assert.equal(failure?.payload.reason, "exposure_threshold_exceeded");
+  assert.ok((projection.aar.u3t?.metrics.highExposureSamples ?? 0) > 8);
+  assert.ok(projection.aar.u3t?.metrics.hardFailures.includes("exposure_threshold_exceeded"));
 });
 
 test("procedural scenario maps create continuous roads, ditches, rivers, and bridge crossings", () => {
@@ -998,6 +1059,66 @@ test("skadad soldat scenario has near opposing fire that can wound a group membe
   assert.equal(wounded.posture, "injured");
   assert.ok(wounded.status.includes("injured"));
   assert.ok(session.events.some((event) => event.type === "status_report_emitted" && event.payload.sourceUnitId === wounded.id));
+});
+
+test("group can mark ÅSA1 and ÅSA2 and drag a wounded soldier to the selected ÅSA", () => {
+  let session = createPhaseOneSession({
+    seed: "casualty-evacuation",
+    scenarioId: "leader_lost_picture",
+    difficulty: "training",
+    overrides: { opposing: [] },
+  });
+  const leader = session.world.units.find((unit) => unit.role === "leader");
+  assert.ok(leader);
+  const casualty = session.world.unitsById.FRIENDLY_6;
+  casualty.health = 35;
+  casualty.posture = "injured";
+  casualty.status = ["injured"];
+
+  const asa1 = { q: 9, r: 51 };
+  const asa2 = { q: 10, r: 51 };
+  session = dispatchCommand(session, {
+    type: "set_casualty_collection_point",
+    unitId: leader.id,
+    collectionPointId: "asa1",
+    target: asa1,
+    issuedAt: session.world.time,
+  });
+  session = dispatchCommand(session, {
+    type: "set_casualty_collection_point",
+    unitId: leader.id,
+    collectionPointId: "asa2",
+    target: asa2,
+    issuedAt: session.world.time,
+  });
+  session = dispatchCommand(session, {
+    type: "start_casualty_evacuation",
+    unitId: leader.id,
+    collectionPointId: "asa2",
+    casualtyUnitId: casualty.id,
+    issuedAt: session.world.time,
+  });
+
+  assert.equal(session.world.casualtyEvacuation?.phase, "moving_to_casualty");
+  assert.deepEqual(session.world.casualtyEvacuation?.collectionPoints?.asa1?.coord, asa1);
+  assert.deepEqual(session.world.casualtyEvacuation?.collectionPoints?.asa2?.coord, asa2);
+  assert.equal(session.world.casualtyEvacuation?.activeCollectionPointId, "asa2");
+  assert.equal(session.world.casualtyEvacuation?.helperUnitIds.length, 2);
+
+  for (let step = 0; step < 90 && session.world.casualtyEvacuation?.phase !== "completed"; step += 1) {
+    session = advanceSession(session, 0.5, { random: () => 1 });
+  }
+
+  assert.equal(session.world.casualtyEvacuation?.phase, "completed");
+  assert.ok(hexDistance(session.world.unitsById.FRIENDLY_6.coord, asa2) <= 1);
+  assert.ok(session.events.some((event) => event.type === "casualty_drag_started"));
+  assert.ok(session.events.some((event) => event.type === "casualty_evacuation_completed"));
+
+  const projection = projectSession(session);
+  assert.deepEqual(projection.casualtyEvacuation?.collectionPoint, asa2);
+  assert.deepEqual(projection.casualtyEvacuation?.collectionPoints?.asa1?.coord, asa1);
+  assert.deepEqual(projection.casualtyEvacuation?.collectionPoints?.asa2?.coord, asa2);
+  assert.equal(projection.units.find((unit) => unit.id === "FRIENDLY_6")?.activity.reason, "injured");
 });
 
 test("group objective succeeds when the leader and enough effective soldiers reach the goal area", () => {

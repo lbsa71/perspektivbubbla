@@ -62,9 +62,21 @@ h2 {
   font-size: 12px;
 }
 
-.status span {
+.status span,
+.status a {
   border: 1px solid #4b5847;
   padding: 4px 7px;
+}
+
+.status a {
+  color: #d7dfd2;
+  text-decoration: none;
+}
+
+.status a:hover,
+.status a:focus {
+  border-color: #94ad83;
+  color: #eef4e8;
 }
 
 .scenario-chooser[hidden] {
@@ -239,6 +251,48 @@ h2 {
   color: #eef4e8;
   font-size: 12px;
   line-height: 1.35;
+}
+
+.scenario-u3t {
+  margin-top: 14px;
+}
+
+.scenario-u3t h3 {
+  margin-top: 0;
+}
+
+.scenario-u3t-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.scenario-u3t-grid div,
+.scenario-thresholds {
+  border: 1px solid #394236;
+  background: #121711;
+  padding: 9px;
+}
+
+.scenario-u3t-grid span,
+.scenario-thresholds span {
+  display: block;
+  margin-bottom: 5px;
+  color: #d7dfd2;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.scenario-u3t-grid p,
+.scenario-thresholds p {
+  margin: 0;
+  color: #aeb9a8;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.scenario-thresholds {
+  margin-top: 8px;
 }
 
 .scenario-columns {
@@ -1166,6 +1220,52 @@ body[data-difficulty="normal"] .effect-zone {
   stroke-width: 4;
 }
 
+.casualty-point {
+  pointer-events: none;
+}
+
+.casualty-point circle {
+  fill: rgba(112, 184, 214, 0.18);
+  stroke: #8ed2e3;
+  stroke-width: 2.5;
+  stroke-dasharray: 5 4;
+}
+
+.casualty-asa2 circle {
+  fill: rgba(240, 216, 111, 0.14);
+  stroke: #f0d86f;
+}
+
+.casualty-point.is-active circle {
+  stroke-width: 3.5;
+}
+
+.casualty-point path {
+  fill: none;
+  stroke: #eaf7f4;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+
+.casualty-point text {
+  fill: #8ed2e3;
+  font-size: 10px;
+  font-weight: 700;
+  paint-order: stroke;
+  stroke: #111410;
+  stroke-width: 4;
+}
+
+.casualty-asa2 text {
+  fill: #f0d86f;
+}
+
+.casualty-dragging circle,
+.casualty-moving_to_casualty circle {
+  stroke: #f0d86f;
+  fill: rgba(240, 216, 111, 0.14);
+}
+
 .intent-line {
   stroke: #8fb9cc;
   stroke-width: 2;
@@ -1318,6 +1418,42 @@ body[data-difficulty="normal"] .effect-zone {
   line-height: 1.35;
 }
 
+.u3t-debrief {
+  margin-bottom: 10px;
+  border: 1px solid #394236;
+  background: #10150f;
+  padding: 10px;
+}
+
+.u3t-debrief > strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #eef4e8;
+}
+
+.u3t-observations {
+  display: grid;
+  gap: 6px;
+}
+
+.u3t-observation {
+  border-left: 3px solid #394236;
+  padding-left: 8px;
+}
+
+.u3t-observation span {
+  color: #d7dfd2;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.u3t-observation p {
+  margin: 3px 0 0;
+  color: #c7d2c1;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 ol {
   margin: 0;
   padding-left: 20px;
@@ -1335,8 +1471,28 @@ li {
 @media (max-width: 900px) {
   .intro-cards,
   .help-grid,
-  .scenario-brief {
+  .scenario-brief,
+  .scenario-u3t-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-height: 720px) and (min-width: 641px) {
+  .command-panel {
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  .roster-item:hover::after,
+  .roster-item:focus::after,
+  .info-word:hover::after,
+  .info-word:focus::after {
+    position: fixed;
+    top: 82px;
+    left: 272px;
+    width: min(270px, calc(100vw - 292px));
+    max-height: calc(100vh - 98px);
+    overflow: auto;
   }
 }
 

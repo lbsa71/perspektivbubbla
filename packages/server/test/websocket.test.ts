@@ -122,11 +122,84 @@ test("http api lists scenarios and starts selected difficulty", async (t) => {
   assert.match(await directScenarioResponse.text(), /Perspektivbubbla/);
 });
 
+test("websocket clients in the same game share one authoritative session", async (t) => {
+  const app = createAppServer();
+  await app.listen(0);
+  t.after(() => app.close());
+
+  const { port } = app.address();
+  await fetch(`http://127.0.0.1:${port}/api/session?game=shared`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scenarioId: "cover_to_cover", difficulty: "training", seed: "shared-game" }),
+  });
+
+  const leader = new WebSocket(`ws://127.0.0.1:${port}/ws?game=shared`);
+  const observer = new WebSocket(`ws://127.0.0.1:${port}/ws?game=shared`);
+  t.after(() => leader.close());
+  t.after(() => observer.close());
+
+  const leaderFirst = await nextMessage(leader);
+  const observerFirst = await nextMessage(observer);
+  assert.equal(leaderFirst.projection.sessionId, observerFirst.projection.sessionId);
+  assert.equal(leaderFirst.projection.scenario.id, "cover_to_cover");
+
+  leader.send(
+    JSON.stringify({
+      type: "command",
+      command: {
+        type: "move_to_hex",
+        unitId: leaderFirst.projection.player.id,
+        target: {
+          q: leaderFirst.projection.player.coord.q + 3,
+          r: leaderFirst.projection.player.coord.r,
+        },
+        issuedAt: leaderFirst.projection.time,
+      },
+    }),
+  );
+
+  const observerUpdate = await nextProjection(observer, (message) =>
+    message.projection.events.some((event: { type: string }) => event.type === "movement_started"),
+  );
+  assert.equal(observerUpdate.projection.sessionId, leaderFirst.projection.sessionId);
+  assert.ok(observerUpdate.projection.events.some((event: { type: string }) => event.type === "movement_started"));
+});
+
+test("game ids isolate server-side sessions", async (t) => {
+  const app = createAppServer();
+  await app.listen(0);
+  t.after(() => app.close());
+
+  const { port } = app.address();
+  await fetch(`http://127.0.0.1:${port}/api/session?game=alpha`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scenarioId: "cover_to_cover", difficulty: "training", seed: "alpha-game" }),
+  });
+  await fetch(`http://127.0.0.1:${port}/api/session?game=bravo`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ scenarioId: "risk_zone_blocking", difficulty: "realistic", seed: "bravo-game" }),
+  });
+
+  const alpha = await fetch(`http://127.0.0.1:${port}/api/session?game=alpha`);
+  const bravo = await fetch(`http://127.0.0.1:${port}/api/session?game=bravo`);
+  const alphaProjection = await alpha.json() as SocketMessage["projection"];
+  const bravoProjection = await bravo.json() as SocketMessage["projection"];
+
+  assert.notEqual(alphaProjection.sessionId, bravoProjection.sessionId);
+  assert.equal(alphaProjection.scenario.id, "cover_to_cover");
+  assert.equal(bravoProjection.scenario.id, "risk_zone_blocking");
+});
+
 type SocketMessage = {
   type: string;
   projection: {
+    sessionId: string;
     time: number;
     activeFormation?: { formation: string };
+    scenario: { id: string };
     map: { width: number };
     player: { id: string; role: string; coord: { q: number; r: number } };
     units: Array<{ intent: { type: string } }>;
