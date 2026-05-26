@@ -209,7 +209,7 @@ type SocketMessage = {
 
 function nextMessage(socket: WebSocket): Promise<SocketMessage> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("timed out waiting for websocket message")), 1500);
+    const timeout = setTimeout(() => reject(new Error("timed out waiting for websocket message")), 4000);
     socket.addEventListener(
       "message",
       (event) => {

@@ -498,7 +498,7 @@ h2 {
 .command-panel {
   overflow: visible;
   position: relative;
-  z-index: 3;
+  z-index: 12;
 }
 
 .panel:last-child {
@@ -671,6 +671,10 @@ body[data-difficulty="realistic"] .gesture-command span {
   grid-template-columns: repeat(2, 1fr);
 }
 
+.retreat-controls {
+  grid-template-columns: 1fr;
+}
+
 .info-words {
   display: flex;
   flex-wrap: wrap;
@@ -733,7 +737,7 @@ body[data-difficulty="realistic"] .gesture-command span {
 .info-word:focus::after {
   content: attr(data-tooltip);
   position: absolute;
-  z-index: 20;
+  z-index: 40;
   top: 0;
   left: calc(100% + 10px);
   width: 270px;
@@ -1125,6 +1129,15 @@ body[data-difficulty="realistic"] .gesture-command span {
   stroke-width: 3;
 }
 
+.unit-marker.unit-firing circle {
+  stroke: #fff5c4;
+  stroke-width: 3.2;
+}
+
+.unit-marker.unit-firing .facing {
+  stroke: #fff5c4;
+}
+
 .effect-zone {
   fill: rgba(240, 216, 111, 0.045);
   stroke: rgba(240, 216, 111, 0.12);
@@ -1170,6 +1183,127 @@ body[data-difficulty="normal"] .effect-zone {
 .blocking-warning.severity-high line,
 .blocking-warning.severity-high circle {
   stroke: #d0655b;
+}
+
+.maneuver-overlay {
+  pointer-events: none;
+}
+
+.maneuver-ring {
+  fill: none;
+  stroke-width: 2.5;
+  stroke-dasharray: 4 3;
+}
+
+.maneuver-covering {
+  stroke: #70b8d6;
+}
+
+.maneuver-moving {
+  stroke: #f0d86f;
+  stroke-dasharray: none;
+}
+
+.maneuver-carrier {
+  stroke: #e38b77;
+}
+
+.maneuver-reinforcement-line {
+  stroke: #f0d86f;
+  stroke-width: 2.5;
+  stroke-dasharray: 8 5;
+}
+
+.casualty-team-link {
+  stroke: #f0a08d;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-dasharray: 5 3;
+  opacity: 0.9;
+}
+
+.casualty-team-target circle {
+  fill: rgba(240, 160, 141, 0.18);
+  stroke: #f0a08d;
+  stroke-width: 2.2;
+}
+
+.casualty-team-target path {
+  stroke: #f0a08d;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.casualty-team-blocked circle,
+.casualty-team-blocked path {
+  stroke: #d0655b;
+}
+
+.maneuver-blocked {
+  fill: rgba(208, 101, 91, 0.22);
+  stroke: #d0655b;
+  stroke-width: 2.5;
+  stroke-dasharray: 3 3;
+}
+
+.fire-burst {
+  pointer-events: none;
+}
+
+.fire-trace {
+  stroke-width: 2.8;
+  stroke-linecap: round;
+  stroke-dasharray: 1 5;
+  opacity: 0.88;
+}
+
+.fire-flash {
+  fill: rgba(255, 245, 196, 0.72);
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+}
+
+.fire-impact {
+  fill: none;
+  stroke-width: 2.2;
+  stroke-dasharray: 2 2;
+  opacity: 0.95;
+}
+
+.fire-burst-friendly .fire-trace,
+.fire-burst-friendly .fire-impact {
+  stroke: #f0d86f;
+}
+
+.fire-burst-friendly .fire-flash {
+  stroke: #f0d86f;
+}
+
+.fire-burst-enemy .fire-trace,
+.fire-burst-enemy .fire-impact {
+  stroke: #e38b77;
+}
+
+.fire-burst-enemy .fire-flash {
+  stroke: #e38b77;
+  fill: rgba(227, 139, 119, 0.42);
+}
+
+.unit-status-covering_fire circle {
+  stroke: #70b8d6;
+}
+
+.unit-status-retreat_moving circle {
+  stroke: #f0d86f;
+}
+
+.unit-status-forward_moving circle {
+  stroke: #94d083;
+}
+
+.unit-status-suppressed circle,
+.unit-status-tired circle {
+  stroke: #e38b77;
 }
 
 .order-range {

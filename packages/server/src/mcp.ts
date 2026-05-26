@@ -35,6 +35,7 @@ const SCENARIO_IDS: ScenarioId[] = [
   "cover_to_cover_observed",
   "risk_zone_blocking",
   "leader_lost_picture",
+  "casualty_retreat",
   "river_bridge_crossing",
   "ditch_line_contact",
 ];
@@ -293,6 +294,15 @@ function executeTool(name: string, args: JsonObject, context: McpRequestContext)
         formation: getOptionalEnum(args, "formation", FORMATIONS) ?? "line",
         communication: getOptionalEnum(args, "communication", COMMUNICATION_METHODS) ?? "voice",
         direction: getOptionalEnum(args, "direction", DIRECTIONS),
+        directionTarget: getOptionalHex(args, "directionTargetQ", "directionTargetR"),
+        issuedAt: getIssuedAt(args, session),
+      }));
+    case "game_issue_alternating_forward_order":
+      return dispatchToolCommand(context, args, (session) => ({
+        type: "issue_alternating_forward_order",
+        unitId: getUnitId(args, session),
+        communication: getOptionalEnum(args, "communication", COMMUNICATION_METHODS) ?? "voice",
+        direction: getDirection(args, "direction"),
         directionTarget: getOptionalHex(args, "directionTargetQ", "directionTargetR"),
         issuedAt: getIssuedAt(args, session),
       }));
@@ -785,6 +795,17 @@ const MCP_TOOLS: JsonObject[] = [
       directionTargetQ: integerSchema("Optional q coordinate used to infer advance direction."),
       directionTargetR: integerSchema("Optional r coordinate used to infer advance direction."),
     }),
+  },
+  {
+    name: "game_issue_alternating_forward_order",
+    title: "Issue Alternating Forward Order",
+    description: "As the leader, order alternating forward movement so one bound moves while the other covers with fire.",
+    inputSchema: commandSchema({
+      communication: enumSchema(COMMUNICATION_METHODS, "Order communication method. Defaults to voice."),
+      direction: enumSchema(DIRECTIONS, "Advance direction."),
+      directionTargetQ: integerSchema("Optional q coordinate used to infer advance direction."),
+      directionTargetR: integerSchema("Optional r coordinate used to infer advance direction."),
+    }, ["direction"]),
   },
   {
     name: "game_halt_group",

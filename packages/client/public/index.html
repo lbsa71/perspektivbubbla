@@ -96,6 +96,12 @@
               <button data-command="forward">Framåt!</button>
               <button data-command="halt">Halt!</button>
             </div>
+            <div class="controls retreat-controls" aria-label="Reträttorder med röst">
+              <button data-command="alternating-forward">Växelvis framåt</button>
+              <button data-command="alternating-retreat">Växelvis bakåt</button>
+              <button data-command="zipper-retreat" data-side="left">Blixtlås vänster</button>
+              <button data-command="zipper-retreat" data-side="right">Blixtlås höger</button>
+            </div>
           </div>
 
           <div id="gesture-palette" class="command-palette gesture-palette" role="tabpanel" aria-labelledby="gesture-tab" hidden>
@@ -135,6 +141,24 @@
                 <span>Halt</span>
               </button>
             </div>
+            <div class="controls gesture-controls retreat-controls" aria-label="Reträttorder med tecken">
+              <button class="gesture-command" data-command="alternating-forward" title="Växelvis framåt">
+                <img src="/signs/general/vaxelvis_framat_bakat.png" alt="" aria-hidden="true" />
+                <span>Växelvis framåt</span>
+              </button>
+              <button class="gesture-command" data-command="alternating-retreat" title="Växelvis bakåt">
+                <img src="/signs/general/vaxelvis_framat_bakat.png" alt="" aria-hidden="true" />
+                <span>Växelvis bakåt</span>
+              </button>
+              <button class="gesture-command" data-command="zipper-retreat" data-side="left" title="Blixtlås vänster">
+                <img src="/signs/general/vaxelvis_framat_bakat.png" alt="" aria-hidden="true" />
+                <span>Blixtlås vänster</span>
+              </button>
+              <button class="gesture-command" data-command="zipper-retreat" data-side="right" title="Blixtlås höger">
+                <img src="/signs/general/vaxelvis_framat_bakat.png" alt="" aria-hidden="true" />
+                <span>Blixtlås höger</span>
+              </button>
+            </div>
           </div>
 
           <div id="radio-palette" class="command-palette radio-palette" role="tabpanel" aria-labelledby="radio-tab" hidden>
@@ -150,6 +174,12 @@
               <button data-command="forward">Framåt!</button>
               <button data-command="halt">Halt!</button>
             </div>
+            <div class="controls retreat-controls" aria-label="Reträttorder med radio">
+              <button data-command="alternating-forward">Växelvis framåt</button>
+              <button data-command="alternating-retreat">Växelvis bakåt</button>
+              <button data-command="zipper-retreat" data-side="left">Blixtlås vänster</button>
+              <button data-command="zipper-retreat" data-side="right">Blixtlås höger</button>
+            </div>
           </div>
 
           <h2>Sjukvård</h2>
@@ -158,6 +188,7 @@
             <button data-command="set-casualty-point" data-casualty-point="asa2">Sätt ÅSA2</button>
             <button data-command="evacuate-casualty">Släpa skadad</button>
           </div>
+
         </aside>
 
         <section class="map-wrap">

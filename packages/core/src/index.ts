@@ -16,7 +16,8 @@ export type ScenarioId =
   | "risk_zone_blocking"
   | "leader_lost_picture"
   | "river_bridge_crossing"
-  | "ditch_line_contact";
+  | "ditch_line_contact"
+  | "casualty_retreat";
 type ScenarioKind = "soldier" | "risk_zone" | "group_commander";
 type ScenarioMapPlan = {
   clearings?: Array<{ center: HexCoord; radius: number; terrain?: TerrainType }>;
@@ -26,6 +27,7 @@ type ScenarioMapPlan = {
   rivers?: Array<{ from: HexCoord; to: HexCoord; width?: number; bend?: number; bridges?: Array<{ coord: HexCoord; radius?: number }> }>;
   forests?: Array<{ center: HexCoord; radius: number }>;
 };
+type OpposingUnitSeed = Partial<Pick<Unit, "id" | "coord" | "facing" | "lookDirection" | "posture" | "alerted" | "status">>;
 
 export type HexCoord = {
   q: number;
@@ -249,6 +251,40 @@ type ForwardFormationPlan = {
   advanceTargetPoint: MapPoint;
 };
 
+export type TacticalManeuverType = "alternating_forward" | "alternating_retreat" | "zipper_retreat" | "casualty_recovery";
+export type TacticalManeuverPhase = "covering" | "moving" | "handoff" | "completed";
+export type ZipperSide = "left" | "right";
+export type CasualtyTeamMode =
+  | "advancing_with_group"
+  | "retreating_with_group"
+  | "handoff";
+export type CasualtyTeamIntent = "holding" | "moving" | "handoff" | "blocked";
+export type CasualtyTeamWaitReason =
+  | "covering_bound"
+  | "casualty_team_blocked"
+  | "carrier_missing"
+  | "handoff_pending"
+  | "spacing_blocked";
+
+export type TacticalManeuverState = {
+  orderId: string;
+  type: TacticalManeuverType;
+  phase: TacticalManeuverPhase;
+  direction: Direction;
+  directionVector?: MapVector;
+  communication: CommunicationMethod;
+  coveringUnitIds: string[];
+  movingUnitIds: string[];
+  casualtyUnitId?: string;
+  carrierUnitIds?: string[];
+  requestedReinforcement?: { unitId?: string; forUnitId: string; requestedAt: number };
+  zipperSide?: ZipperSide;
+  stepIndex?: number;
+  boundIndex?: number;
+  boundStartedUnitIds?: string[];
+  issuedAt: number;
+};
+
 export type Unit = {
   id: string;
   name: string;
@@ -263,6 +299,9 @@ export type Unit = {
   health: number;
   stamina: number;
   stress: number;
+  suppression: number;
+  fireCooldown: number;
+  lastFiredAt?: number;
   posture: Posture;
   status: string[];
   intent: UnitIntent;
@@ -276,6 +315,8 @@ export type UnitActivityProjection = {
   targetPoint?: MapPoint;
   reason?: string;
   relatedUnitId?: string;
+  relatedUnitIds?: string[];
+  tacticalRole?: "covering" | "moving" | "carrier" | "casualty" | "handoff" | "reinforcement" | "resting";
   orderId?: string;
   progress?: number;
   pathLength?: number;
@@ -306,7 +347,9 @@ export type WorldState = {
   unitsById: Record<string, Unit>;
   visibilityMemory: Record<string, Record<string, number>>;
   activeFormation?: FormationState;
+  activeManeuver?: TacticalManeuverState;
   casualtyEvacuation?: CasualtyEvacuationState;
+  casualtyTeam?: CasualtyTeamState;
 };
 
 export type FormationState = {
@@ -352,8 +395,27 @@ export type CasualtyEvacuationState = {
   orderId?: string;
   casualtyUnitId?: string;
   helperUnitIds: string[];
+  carrierUnitIds?: string[];
+  underFire?: boolean;
+  requestedReinforcement?: { unitId?: string; forUnitId: string; requestedAt: number };
   phase: "idle" | "moving_to_casualty" | "dragging" | "completed";
   issuedAt?: number;
+};
+
+export type CasualtyTeamState = {
+  casualtyUnitId: string;
+  carrierUnitIds: string[];
+  assignedElement?: GroupElement;
+  mode: CasualtyTeamMode;
+  teamIntent: CasualtyTeamIntent;
+  teamTarget?: HexCoord;
+  teamTargetPoint?: MapPoint;
+  carrierSlots: Record<string, HexCoord>;
+  carrierSlotPoints: Record<string, MapPoint>;
+  casualtySlot?: HexCoord;
+  casualtySlotPoint?: MapPoint;
+  waitReason?: CasualtyTeamWaitReason;
+  updatedAt?: number;
 };
 
 export type DomainEvent = {
@@ -364,6 +426,8 @@ export type DomainEvent = {
   type: string;
   payload: Record<string, unknown>;
 };
+
+type PendingDomainEvent = Pick<DomainEvent, "type" | "payload">;
 
 export type Session = {
   id: string;
@@ -424,6 +488,34 @@ export type PlayerCommand =
       issuedAt: number;
     }
   | {
+      type: "issue_alternating_forward_order";
+      unitId: string;
+      direction: Direction;
+      directionTarget?: HexCoord;
+      directionTargetPoint?: MapPoint;
+      communication: CommunicationMethod;
+      issuedAt: number;
+    }
+  | {
+      type: "issue_alternating_retreat_order";
+      unitId: string;
+      direction: Direction;
+      directionTarget?: HexCoord;
+      directionTargetPoint?: MapPoint;
+      communication: CommunicationMethod;
+      issuedAt: number;
+    }
+  | {
+      type: "issue_zipper_retreat_order";
+      unitId: string;
+      side: ZipperSide;
+      direction: Direction;
+      directionTarget?: HexCoord;
+      directionTargetPoint?: MapPoint;
+      communication: CommunicationMethod;
+      issuedAt: number;
+    }
+  | {
       type: "set_casualty_collection_point";
       unitId: string;
       collectionPointId?: CasualtyCollectionPointId;
@@ -463,7 +555,9 @@ export type Projection = {
   scenario: ScenarioRuntime;
   objective: ObjectiveState;
   casualtyEvacuation?: CasualtyEvacuationState;
+  casualtyTeam?: CasualtyTeamState;
   activeFormation?: FormationState;
+  activeManeuver?: TacticalManeuverState;
   map: {
     width: number;
     height: number;
@@ -526,6 +620,19 @@ const OBJECTIVE_SINGLE_RADIUS_HEXES = 1;
 const OBJECTIVE_GROUP_RADIUS_HEXES = 3;
 const OBJECTIVE_GROUP_REQUIRED_RATIO = 0.75;
 const FIRE_RESOLUTION_WINDOW_SECONDS = 2.5;
+const SUPPRESSED_FIRE_INTERVAL_MULTIPLIER = 2.5;
+const RETREAT_BOUND_HEXES = 2;
+const ALTERNATING_FORWARD_SLOT_SPACING_HEXES = 2;
+const ALTERNATING_FORWARD_BOUND_HEXES = 2;
+const RETREAT_FIRE_INTERVAL_SECONDS = 1.5;
+const RETREAT_STAMINA_COST_PER_HEX = 2.2;
+const COVERING_FIRE_STAMINA_COST = 2.5;
+const CASUALTY_DRAG_STAMINA_COST_PER_SECOND = 6;
+const CASUALTY_REINFORCEMENT_STAMINA_THRESHOLD = 45;
+const SUPPRESSION_DECAY_PER_SECOND = 0.18;
+const FRIENDLY_FIRE_SUPPRESSION = 0.34;
+const FRIENDLY_FIRE_MAX_CASUALTY_PROBABILITY = 0.5;
+const SUPPRESSION_CASUALTY_RISK_REDUCTION = 0.18;
 
 const SCENARIO_OPTIONS: Array<ScenarioOption & { kind: ScenarioKind; start: HexCoord; facing: Direction; map: ScenarioMapPlan }> = [
   {
@@ -668,8 +775,8 @@ const SCENARIO_OPTIONS: Array<ScenarioOption & { kind: ScenarioKind; start: HexC
     start: { q: 8, r: 50 },
     facing: "SE",
     troop: [
-      { id: "LEADER_1", name: "Lind", role: "leader", element: "command", elementPosition: 1 },
-      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "tat_1", elementPosition: 1 },
+      { id: "LEADER_1", name: "Lind", role: "leader", element: "tat_1", elementPosition: 1 },
+      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "tat_1", elementPosition: 2 },
     ],
     goal: {
       title: "Passera utan att blockera",
@@ -695,14 +802,14 @@ const SCENARIO_OPTIONS: Array<ScenarioOption & { kind: ScenarioKind; start: HexC
     start: { q: 8, r: 50 },
     facing: "SE",
     troop: [
-      { id: "LEADER_1", name: "Lind", role: "leader", element: "command", elementPosition: 1 },
-      { id: "DEPUTY_1", name: "Nordin", role: "deputy_leader", element: "command", elementPosition: 2 },
-      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "tat_1", elementPosition: 1 },
-      { id: "FRIENDLY_2", name: "Berg", role: "soldier", element: "tat_1", elementPosition: 2 },
-      { id: "FRIENDLY_3", name: "Ceder", role: "soldier", element: "tat_1", elementPosition: 3 },
-      { id: "FRIENDLY_4", name: "Dahl", role: "soldier", element: "tat_2", elementPosition: 1 },
-      { id: "FRIENDLY_5", name: "Ek", role: "soldier", element: "tat_2", elementPosition: 2 },
-      { id: "FRIENDLY_6", name: "Falk", role: "soldier", element: "tat_2", elementPosition: 3 },
+      { id: "LEADER_1", name: "Lind", role: "leader", element: "tat_1", elementPosition: 1 },
+      { id: "DEPUTY_1", name: "Nordin", role: "deputy_leader", element: "tat_2", elementPosition: 1 },
+      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "tat_1", elementPosition: 2 },
+      { id: "FRIENDLY_2", name: "Berg", role: "soldier", element: "tat_1", elementPosition: 3 },
+      { id: "FRIENDLY_3", name: "Ceder", role: "soldier", element: "tat_1", elementPosition: 4 },
+      { id: "FRIENDLY_4", name: "Dahl", role: "soldier", element: "tat_2", elementPosition: 2 },
+      { id: "FRIENDLY_5", name: "Ek", role: "soldier", element: "tat_2", elementPosition: 3 },
+      { id: "FRIENDLY_6", name: "Falk", role: "soldier", element: "tat_2", elementPosition: 4 },
     ],
     goal: {
       title: "För gruppen till skydd",
@@ -723,6 +830,63 @@ const SCENARIO_OPTIONS: Array<ScenarioOption & { kind: ScenarioKind; start: HexC
     },
   },
   {
+    id: "casualty_retreat",
+    kind: "group_commander",
+    title: "Skadad under reträtt",
+    subtitle: "Växelvis bakåt",
+    description: "Öva växelvis bakåt, blixtlås och omhändertagande under eld. ÅSA markerar när gruppen är i säkerhet för sjukvård.",
+    start: { q: 22, r: 52 },
+    facing: "SE",
+    troop: [
+      { id: "LEADER_1", name: "Lind", role: "leader", element: "tat_1", elementPosition: 1 },
+      { id: "DEPUTY_1", name: "Nordin", role: "deputy_leader", element: "tat_2", elementPosition: 1 },
+      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "tat_1", elementPosition: 2 },
+      { id: "FRIENDLY_2", name: "Berg", role: "soldier", element: "tat_1", elementPosition: 3 },
+      { id: "FRIENDLY_3", name: "Ceder", role: "soldier", element: "tat_1", elementPosition: 4 },
+      { id: "FRIENDLY_4", name: "Dahl", role: "soldier", element: "tat_2", elementPosition: 2 },
+      { id: "FRIENDLY_5", name: "Ek", role: "soldier", element: "tat_2", elementPosition: 3 },
+      { id: "FRIENDLY_6", name: "Falk", role: "soldier", element: "tat_2", elementPosition: 4 },
+    ],
+    goal: {
+      title: "Få skadad till ÅSA",
+      description: "Släpa skadad kamrat till ÅSA och dra tillbaka gruppen utan att lämna någon exponerad utan täckning.",
+      target: { q: 13, r: 56 },
+    },
+    defaultDifficulty: "training",
+    recommendedFormation: "line",
+    training: {
+      u3t: {
+        uppgiften: "Bryt kontakt bakåt, omhänderta skadad soldat och få gruppen till ÅSA utan otäckt exponering.",
+        tiden: "Tempot ska växla: täckning först, rörelse därefter. För lång dragning utan avlösning ger trötthet.",
+        truppen: "Åtta soldater med grpc och stf grpc nära varandra. En soldat är skadad från start och bärare kan behöva förstärkning.",
+        terrangen: "Öppen mark straffar otäckt reträtt. Diken och skog ger skydd men kan sinka dragning.",
+      },
+      constraints: {
+        maxExposureSamples: { exposureAtLeast: 2, samples: 14 },
+        maxCumulativeExposure: { exposure: 42 },
+        maxContactEvents: 8,
+        maxWounded: 1,
+      },
+      aarFocus: ["Växelvis bakåt", "Täckande eld", "Bärartrötthet", "Förstärkning och avlösning", "ÅSA"],
+    },
+    map: {
+      fieldCorridors: [{ from: { q: 12, r: 56 }, to: { q: 28, r: 50 }, width: 6, bend: 1 }],
+      roads: [{ from: { q: 8, r: 58 }, to: { q: 34, r: 48 }, bend: 2 }],
+      ditches: [
+        { from: { q: 14, r: 54 }, to: { q: 24, r: 52 }, bend: 1 },
+        { from: { q: 17, r: 59 }, to: { q: 30, r: 56 }, bend: 1 },
+      ],
+      forests: [
+        { center: { q: 13, r: 56 }, radius: 3 },
+        { center: { q: 27, r: 49 }, radius: 2 },
+      ],
+      clearings: [
+        { center: { q: 22, r: 52 }, radius: 4 },
+        { center: { q: 13, r: 56 }, radius: 2 },
+      ],
+    },
+  },
+  {
     id: "river_bridge_crossing",
     kind: "group_commander",
     title: "Broövergång under observation",
@@ -731,14 +895,14 @@ const SCENARIO_OPTIONS: Array<ScenarioOption & { kind: ScenarioKind; start: HexC
     start: { q: 10, r: 62 },
     facing: "NE",
     troop: [
-      { id: "LEADER_1", name: "Lind", role: "leader", element: "command", elementPosition: 1 },
-      { id: "DEPUTY_1", name: "Nordin", role: "deputy_leader", element: "command", elementPosition: 2 },
-      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "tat_1", elementPosition: 1 },
-      { id: "FRIENDLY_2", name: "Berg", role: "soldier", element: "tat_1", elementPosition: 2 },
-      { id: "FRIENDLY_3", name: "Ceder", role: "soldier", element: "tat_1", elementPosition: 3 },
-      { id: "FRIENDLY_4", name: "Dahl", role: "soldier", element: "tat_2", elementPosition: 1 },
-      { id: "FRIENDLY_5", name: "Ek", role: "soldier", element: "tat_2", elementPosition: 2 },
-      { id: "FRIENDLY_6", name: "Falk", role: "soldier", element: "tat_2", elementPosition: 3 },
+      { id: "LEADER_1", name: "Lind", role: "leader", element: "tat_1", elementPosition: 1 },
+      { id: "DEPUTY_1", name: "Nordin", role: "deputy_leader", element: "tat_2", elementPosition: 1 },
+      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "tat_1", elementPosition: 2 },
+      { id: "FRIENDLY_2", name: "Berg", role: "soldier", element: "tat_1", elementPosition: 3 },
+      { id: "FRIENDLY_3", name: "Ceder", role: "soldier", element: "tat_1", elementPosition: 4 },
+      { id: "FRIENDLY_4", name: "Dahl", role: "soldier", element: "tat_2", elementPosition: 2 },
+      { id: "FRIENDLY_5", name: "Ek", role: "soldier", element: "tat_2", elementPosition: 3 },
+      { id: "FRIENDLY_6", name: "Falk", role: "soldier", element: "tat_2", elementPosition: 4 },
     ],
     goal: {
       title: "Säkra andra sidan",
@@ -777,14 +941,14 @@ const SCENARIO_OPTIONS: Array<ScenarioOption & { kind: ScenarioKind; start: HexC
     start: { q: 12, r: 62 },
     facing: "NE",
     troop: [
-      { id: "LEADER_1", name: "Lind", role: "leader", element: "command", elementPosition: 1 },
-      { id: "DEPUTY_1", name: "Nordin", role: "deputy_leader", element: "command", elementPosition: 2 },
-      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "tat_1", elementPosition: 1 },
-      { id: "FRIENDLY_2", name: "Berg", role: "soldier", element: "tat_1", elementPosition: 2 },
-      { id: "FRIENDLY_3", name: "Ceder", role: "soldier", element: "tat_1", elementPosition: 3 },
-      { id: "FRIENDLY_4", name: "Dahl", role: "soldier", element: "tat_2", elementPosition: 1 },
-      { id: "FRIENDLY_5", name: "Ek", role: "soldier", element: "tat_2", elementPosition: 2 },
-      { id: "FRIENDLY_6", name: "Falk", role: "soldier", element: "tat_2", elementPosition: 3 },
+      { id: "LEADER_1", name: "Lind", role: "leader", element: "tat_1", elementPosition: 1 },
+      { id: "DEPUTY_1", name: "Nordin", role: "deputy_leader", element: "tat_2", elementPosition: 1 },
+      { id: "FRIENDLY_1", name: "Andersson", role: "soldier", element: "tat_1", elementPosition: 2 },
+      { id: "FRIENDLY_2", name: "Berg", role: "soldier", element: "tat_1", elementPosition: 3 },
+      { id: "FRIENDLY_3", name: "Ceder", role: "soldier", element: "tat_1", elementPosition: 4 },
+      { id: "FRIENDLY_4", name: "Dahl", role: "soldier", element: "tat_2", elementPosition: 2 },
+      { id: "FRIENDLY_5", name: "Ek", role: "soldier", element: "tat_2", elementPosition: 3 },
+      { id: "FRIENDLY_6", name: "Falk", role: "soldier", element: "tat_2", elementPosition: 4 },
     ],
     goal: {
       title: "Ta terrängen bakom diket",
@@ -949,6 +1113,18 @@ export function dispatchCommand(session: Session, command: PlayerCommand): Sessi
     return dispatchHaltGroup(session, unit, command);
   }
 
+  if (command.type === "issue_alternating_forward_order") {
+    return dispatchAlternatingForwardOrder(session, unit, command);
+  }
+
+  if (command.type === "issue_alternating_retreat_order") {
+    return dispatchAlternatingRetreatOrder(session, unit, command);
+  }
+
+  if (command.type === "issue_zipper_retreat_order") {
+    return dispatchZipperRetreatOrder(session, unit, command);
+  }
+
   if (command.type === "set_casualty_collection_point") {
     return dispatchCasualtyCollectionPoint(session, unit, command);
   }
@@ -1015,7 +1191,7 @@ export function advanceSession(session: Session, seconds: number, options: Advan
     }),
   ];
 
-  const movementEvents = collectMovementEvents(session.world, seconds);
+  const movementEvents = collectMovementEvents(session.world, seconds, random);
   events.push(...movementEvents.map((event) => buildEvent(session, event.type, event.payload)));
 
   let next = appendAndApply(session, events);
@@ -1032,6 +1208,9 @@ export function advanceSession(session: Session, seconds: number, options: Advan
 
   const opposingEvents = collectOpposingUnitEvents(next, random);
   next = appendAndApply(next, opposingEvents.map((event) => buildEvent(next, event.type, event.payload)));
+
+  const contactReactionEvents = collectFriendlyContactReactionEvents(next.world, opposingEvents, random);
+  next = appendAndApply(next, contactReactionEvents.map((event) => buildEvent(next, event.type, event.payload)));
 
   const objectiveEvents = collectObjectiveEvents(next);
   return appendAndApply(next, objectiveEvents.map((event) => buildEvent(next, event.type, event.payload)));
@@ -1055,7 +1234,9 @@ export function projectSession(session: Session, role: "player" | "observer" = "
     scenario: clone(session.world.scenario),
     objective: clone(session.world.objective),
     casualtyEvacuation: session.world.casualtyEvacuation ? clone(session.world.casualtyEvacuation) : undefined,
+    casualtyTeam: session.world.casualtyTeam ? clone(session.world.casualtyTeam) : undefined,
     activeFormation: session.world.activeFormation ? clone(session.world.activeFormation) : undefined,
+    activeManeuver: session.world.activeManeuver ? clone(session.world.activeManeuver) : undefined,
     map: {
       width: session.world.map.width,
       height: session.world.map.height,
@@ -1097,6 +1278,7 @@ export function projectSession(session: Session, role: "player" | "observer" = "
             event.type === "probabilistic_detection_resolved" ||
             event.type === "contact_pressure_emitted" ||
             event.type === "incoming_fire_resolved" ||
+            event.type === "friendly_fire_resolved" ||
             event.type === "unit_wounded",
         )
         .map(clone),
@@ -1122,27 +1304,64 @@ function unitActivityFor(session: Session, unit: Unit): UnitActivityProjection {
   const completedEvent = latestUnitEvent(session, unit.id, "movement_completed");
   const recentWait = waitEvent && session.world.time - waitEvent.time <= 4 ? waitEvent : undefined;
   const recentBlock = blockedEvent && session.world.time - blockedEvent.time <= 8 ? blockedEvent : undefined;
+  const casualtyTeam = session.world.casualtyTeam;
 
-  if (unit.status.includes("being_dragged")) {
+  if (unit.status.includes("being_dragged") && casualtyTeam?.casualtyUnitId === unit.id) {
+    const target = casualtyTeam.teamIntent === "moving"
+      ? casualtyTeam.teamTarget ?? casualtyTeam.casualtySlot ?? unit.coord
+      : casualtyTeam.casualtySlot ?? casualtyTeam.teamTarget ?? unit.coord;
+    const targetPoint = casualtyTeam.teamIntent === "moving"
+      ? casualtyTeam.teamTargetPoint ?? casualtyTeam.casualtySlotPoint ?? unit.position
+      : casualtyTeam.casualtySlotPoint ?? casualtyTeam.teamTargetPoint ?? unit.position;
     return {
-      state: unit.intent.type === "moving" ? "moving" : "holding",
-      target: clone(unit.intent.type === "moving" ? unit.intent.target : (session.world.casualtyEvacuation?.collectionPoint ?? unit.coord)),
-      targetPoint: unit.intent.type === "moving" ? clone(unit.intent.targetPoint) : session.world.casualtyEvacuation?.collectionPointPoint,
-      reason: unit.intent.type === "moving" ? "casualty_drag" : "casualty_drag_wait",
-      relatedUnitId: session.world.casualtyEvacuation?.helperUnitIds[0],
+      state: casualtyTeam.teamIntent === "moving" ? "moving" : casualtyTeam.teamIntent === "blocked" ? "waiting" : "holding",
+      target: clone(target),
+      targetPoint: clone(targetPoint),
+      reason: casualtyTeam.teamIntent === "moving" ? "casualty_team_bound" : casualtyTeam.waitReason ?? "casualty_team_wait",
+      relatedUnitId: casualtyTeam.carrierUnitIds[0],
+      relatedUnitIds: clone(casualtyTeam.carrierUnitIds),
+      tacticalRole: "casualty",
+      orderId: unit.currentOrderId,
+    };
+  }
+
+  if (unit.status.includes("evac_helper") && casualtyTeam?.carrierUnitIds.includes(unit.id)) {
+    const target = casualtyTeam.carrierSlots[unit.id] ?? casualtyTeam.teamTarget ?? unit.coord;
+    const targetPoint = casualtyTeam.carrierSlotPoints[unit.id] ?? casualtyTeam.teamTargetPoint ?? unit.position;
+    return {
+      state: unit.intent.type === "moving" ? "moving" : casualtyTeam.teamIntent === "blocked" ? "waiting" : "holding",
+      target: clone(unit.intent.type === "moving" ? unit.intent.target : target),
+      targetPoint: clone(unit.intent.type === "moving" ? unit.intent.targetPoint : targetPoint),
+      reason: unit.intent.type === "moving" ? "casualty_team_bound" : casualtyTeam.waitReason ?? "casualty_team_wait",
+      relatedUnitId: casualtyTeam.casualtyUnitId,
+      relatedUnitIds: [casualtyTeam.casualtyUnitId, ...casualtyTeam.carrierUnitIds.filter((unitId) => unitId !== unit.id)],
+      tacticalRole: "carrier",
       orderId: unit.currentOrderId,
       progress: unit.intent.type === "moving" ? round(unit.intent.progress) : undefined,
       pathLength: unit.intent.type === "moving" ? unit.intent.path.length : undefined,
     };
   }
 
+  if (unit.status.includes("being_dragged")) {
+    return {
+      state: "holding",
+      target: clone(unit.coord),
+      targetPoint: clone(unit.position),
+      reason: "casualty_drag_wait",
+      relatedUnitId: session.world.casualtyEvacuation?.helperUnitIds[0],
+      tacticalRole: "casualty",
+      orderId: unit.currentOrderId,
+    };
+  }
+
   if (unit.status.includes("evac_helper")) {
     return {
       state: unit.intent.type === "moving" ? "moving" : "holding",
-      target: clone(unit.intent.type === "moving" ? unit.intent.target : (session.world.casualtyEvacuation?.collectionPoint ?? unit.coord)),
-      targetPoint: unit.intent.type === "moving" ? clone(unit.intent.targetPoint) : session.world.casualtyEvacuation?.collectionPointPoint,
+      target: clone(unit.intent.type === "moving" ? unit.intent.target : unit.coord),
+      targetPoint: unit.intent.type === "moving" ? clone(unit.intent.targetPoint) : clone(unit.position),
       reason: unit.intent.type === "moving" ? "casualty_helper_drag" : "casualty_helper_wait",
       relatedUnitId: session.world.casualtyEvacuation?.casualtyUnitId,
+      tacticalRole: "carrier",
       orderId: unit.currentOrderId,
       progress: unit.intent.type === "moving" ? round(unit.intent.progress) : undefined,
       pathLength: unit.intent.type === "moving" ? unit.intent.path.length : undefined,
@@ -1181,6 +1400,53 @@ function unitActivityFor(session: Session, unit: Unit): UnitActivityProjection {
       reason: String(recentBlock.payload.reason ?? "blocked"),
       orderId: unit.currentOrderId,
       updatedAt: recentBlock.time,
+    };
+  }
+
+  if (unit.status.includes("reinforcement")) {
+    return {
+      state: unit.intent.type === "moving" ? "moving" : "holding",
+      target: clone(unit.intent.type === "moving" ? unit.intent.target : unit.coord),
+      targetPoint: unit.intent.type === "moving" ? clone(unit.intent.targetPoint) : undefined,
+      reason: unit.intent.type === "moving" ? "casualty_reinforcement" : "reinforcement_wait",
+      relatedUnitId: session.world.casualtyEvacuation?.casualtyUnitId,
+      orderId: unit.currentOrderId,
+      progress: unit.intent.type === "moving" ? round(unit.intent.progress) : undefined,
+      pathLength: unit.intent.type === "moving" ? unit.intent.path.length : undefined,
+    };
+  }
+
+  if (unit.status.includes("retreat_moving")) {
+    return {
+      state: unit.intent.type === "moving" ? "moving" : "holding",
+      target: clone(unit.intent.type === "moving" ? unit.intent.target : unit.coord),
+      targetPoint: unit.intent.type === "moving" ? clone(unit.intent.targetPoint) : undefined,
+      reason: unit.intent.type === "moving" ? "retreat_bound" : "retreat_bound_complete",
+      orderId: unit.currentOrderId,
+      progress: unit.intent.type === "moving" ? round(unit.intent.progress) : undefined,
+      pathLength: unit.intent.type === "moving" ? unit.intent.path.length : undefined,
+    };
+  }
+
+  if (unit.status.includes("forward_moving")) {
+    return {
+      state: unit.intent.type === "moving" ? "moving" : "holding",
+      target: clone(unit.intent.type === "moving" ? unit.intent.target : unit.coord),
+      targetPoint: unit.intent.type === "moving" ? clone(unit.intent.targetPoint) : undefined,
+      reason: unit.intent.type === "moving" ? "alternating_forward_bound" : "alternating_forward_bound_complete",
+      orderId: unit.currentOrderId,
+      progress: unit.intent.type === "moving" ? round(unit.intent.progress) : undefined,
+      pathLength: unit.intent.type === "moving" ? unit.intent.path.length : undefined,
+    };
+  }
+
+  if (unit.status.includes("covering_fire")) {
+    return {
+      state: "holding",
+      target: clone(unit.coord),
+      reason: "covering_fire",
+      orderId: unit.currentOrderId,
+      updatedAt: latestUnitEvent(session, unit.id, "friendly_fire_delivered")?.time,
     };
   }
 
@@ -1310,10 +1576,18 @@ function isOrderFlowEvent(event: DomainEvent): boolean {
     event.type === "formation_order_issued" ||
     event.type === "formation_advance_started" ||
     event.type === "formation_movement_diagnostic" ||
+    event.type === "tactical_maneuver_started" ||
+    event.type === "tactical_maneuver_phase_changed" ||
+    event.type === "friendly_fire_delivered" ||
+    event.type === "friendly_fire_resolved" ||
+    event.type === "suppression_applied" ||
+    event.type === "stamina_changed" ||
     event.type === "casualty_collection_point_set" ||
     event.type === "casualty_evacuation_started" ||
     event.type === "casualty_drag_started" ||
     event.type === "casualty_evacuation_completed" ||
+    event.type === "casualty_reinforcement_requested" ||
+    event.type === "casualty_carrier_relieved" ||
     event.type === "order_delivery_resolved" ||
     event.type === "group_halted" ||
     event.type === "movement_started" ||
@@ -1728,21 +2002,23 @@ function forwardFormUpPoint(
   issuer: Unit,
   directionVector: MapVector,
 ): MapPoint {
+  const receivers = formationReceivers(world, issuer.id);
+  let basePoint: MapPoint;
   if (
     activeFormation &&
     activeFormation.formation === formation &&
     (activeFormation.orderKind === "formation" || activeFormation.phase === "forming")
   ) {
-    return clone(activeFormation.targetPoint);
-  }
-  const receivers = formationReceivers(world, issuer.id);
-  if (activeFormation?.phase === "advancing" && receivers.some((unit) => unit.intent.type === "moving")) {
+    basePoint = clone(activeFormation.targetPoint);
+  } else if (activeFormation?.phase === "advancing" && receivers.some((unit) => unit.intent.type === "moving")) {
     const issuerProgress = forwardProgress(issuer.position, directionVector);
     const groupFrontProgress = Math.max(...receivers.map((unit) => forwardProgress(unit.position, directionVector)));
     const forwardShift = Math.max(0, groupFrontProgress - issuerProgress);
-    return addMapPoint(issuer.position, scaleVector(normalizeVector(directionVector), forwardShift));
+    basePoint = addMapPoint(issuer.position, scaleVector(normalizeVector(directionVector), forwardShift));
+  } else {
+    basePoint = clone(issuer.position);
   }
-  return clone(issuer.position);
+  return formation === "file" ? fileFormationTargetPointForCasualtyBlock(world, receivers, basePoint, directionVector) : basePoint;
 }
 
 function dispatchHaltGroup(
@@ -1767,6 +2043,275 @@ function dispatchHaltGroup(
       unitIds: receivers.map((receiver) => receiver.id),
     }),
     ...receivers.flatMap((receiver) => interruptIfMoving(session, receiver.id, "halt_order")),
+  ]);
+}
+
+function dispatchAlternatingRetreatOrder(
+  session: Session,
+  issuer: Unit,
+  command: Extract<PlayerCommand, { type: "issue_alternating_retreat_order" }>,
+): Session {
+  return dispatchTacticalManeuverOrder(session, issuer, command, "alternating_retreat");
+}
+
+function dispatchAlternatingForwardOrder(
+  session: Session,
+  issuer: Unit,
+  command: Extract<PlayerCommand, { type: "issue_alternating_forward_order" }>,
+): Session {
+  return dispatchTacticalManeuverOrder(session, issuer, command, "alternating_forward");
+}
+
+function dispatchZipperRetreatOrder(
+  session: Session,
+  issuer: Unit,
+  command: Extract<PlayerCommand, { type: "issue_zipper_retreat_order" }>,
+): Session {
+  return dispatchTacticalManeuverOrder(session, issuer, command, "zipper_retreat", command.side);
+}
+
+function dispatchTacticalManeuverOrder(
+  session: Session,
+  issuer: Unit,
+  command: Extract<PlayerCommand, { type: "issue_alternating_forward_order" | "issue_alternating_retreat_order" | "issue_zipper_retreat_order" }>,
+  type: "alternating_forward" | "alternating_retreat" | "zipper_retreat",
+  zipperSide?: ZipperSide,
+): Session {
+  if (issuer.side !== "friendly" || issuer.role !== "leader") {
+    return appendAndApply(session, [
+      buildEvent(session, "command_rejected", {
+        reason: "tactical_maneuver_requires_leader",
+        command,
+      }),
+    ]);
+  }
+
+  session = ensureCasualtyTeamForTacticalManeuver(session, issuer, type, command.issuedAt);
+  issuer = session.world.unitsById[issuer.id];
+
+  const receivers = formationReceivers(session.world, issuer.id).filter((unit) => !isUnitInjured(unit));
+  const directionVector =
+    directionVectorFromTargetPoint(issuer.position, command.directionTargetPoint) ??
+    directionVectorFromTarget(issuer.position, command.directionTarget) ??
+    directionVectorFromHexDirection(command.direction);
+  const initialBoundIndex = initialTacticalManeuverBoundIndex(session.world, type);
+  let movingUnitIds =
+    type === "zipper_retreat"
+      ? zipperRetreatMovingUnitIds(receivers, directionVector, zipperSide ?? "left", 0)
+      : alternatingBoundMovingUnitIds(receivers, initialBoundIndex);
+  let coveringUnitIds = receivers.map((unit) => unit.id).filter((unitId) => !movingUnitIds.includes(unitId));
+  ({ movingUnitIds, coveringUnitIds } = applyCasualtyTeamBoundOwnership(session.world, type, initialBoundIndex, movingUnitIds, coveringUnitIds));
+  const activeCasualtyUnitId =
+    session.world.casualtyEvacuation?.phase === "dragging" ? session.world.casualtyEvacuation.casualtyUnitId : undefined;
+  const activeCarrierUnitIds =
+    session.world.casualtyEvacuation?.phase === "dragging"
+      ? uniqueIds(session.world.casualtyEvacuation.carrierUnitIds ?? session.world.casualtyEvacuation.helperUnitIds)
+      : undefined;
+  const orderId = `${session.id}_${type === "alternating_forward" ? "afw" : "ret"}_${session.events.length}`;
+  const startedMovingUnitIds: string[] = [];
+  const maneuverStarted = buildEvent(session, "tactical_maneuver_started", {
+    orderId,
+    type,
+    phase: "moving",
+    direction: command.direction,
+    directionVector,
+    communication: command.communication,
+    coveringUnitIds,
+    movingUnitIds,
+    casualtyUnitId: activeCasualtyUnitId,
+    carrierUnitIds: activeCarrierUnitIds,
+    boundStartedUnitIds: startedMovingUnitIds,
+    zipperSide,
+    stepIndex: 0,
+    boundIndex: initialBoundIndex,
+    issuedAt: command.issuedAt,
+  });
+  const events: DomainEvent[] = [
+    buildEvent(session, "command_accepted", { command }),
+  ];
+
+  const reserved = new Set(
+    session.world.units
+      .filter((unit) => !movingUnitIds.includes(unit.id))
+      .map((unit) => hexKey(unit.coord)),
+  );
+  const threatDirection = maneuverThreatDirection(type, command.direction);
+  for (const unitId of coveringUnitIds) {
+    const covering = session.world.unitsById[unitId];
+    if (!covering) continue;
+    events.push(...interruptIfMoving(session, covering.id, type === "alternating_forward" ? "alternating_forward_cover" : "retreat_cover"));
+    events.push(
+      buildEvent(session, "body_orientation_changed", {
+        unitId,
+        direction: threatDirection,
+        reason: "covering_fire",
+      }),
+    );
+  }
+  for (const unitId of activeCarrierUnitIds ?? []) {
+    if (movingUnitIds.includes(unitId)) continue;
+    events.push(...interruptIfMoving(session, unitId, "casualty_team_hold"));
+  }
+  events.push(maneuverStarted);
+  const maneuverDraft: TacticalManeuverState = {
+    orderId,
+    type,
+    phase: "moving",
+    direction: command.direction,
+    directionVector,
+    communication: command.communication,
+    coveringUnitIds,
+    movingUnitIds,
+    casualtyUnitId: activeCasualtyUnitId,
+    carrierUnitIds: activeCarrierUnitIds,
+    zipperSide,
+    stepIndex: 0,
+    boundIndex: initialBoundIndex,
+    boundStartedUnitIds: [],
+    issuedAt: command.issuedAt,
+  };
+  const teamPlan = casualtyTeamManeuverMovementPlan(session.world, maneuverDraft, movingUnitIds, reserved);
+  const teamHandledUnitIds = teamPlan?.handledUnitIds ?? new Set<string>();
+  if (teamPlan) {
+    events.push(...teamPlan.events.map((event) => buildEvent(session, event.type, event.payload)));
+    for (const unitId of tacticalManeuverStartedUnitIds(teamPlan.events)) {
+      startedMovingUnitIds.push(unitId);
+    }
+    for (const coord of teamPlan.reservedCoords) {
+      reserved.add(hexKey(coord));
+    }
+  }
+  const handledMovingUnitIds = teamPlan?.blocked ? [] : movingUnitIds.filter((unitId) => !teamHandledUnitIds.has(unitId));
+  const assignments = tacticalManeuverTargetAssignments(
+    session.world,
+    type,
+    handledMovingUnitIds,
+    coveringUnitIds,
+    command.direction,
+    directionVector,
+    reserved,
+  );
+  for (const unitId of handledMovingUnitIds) {
+    const unit = session.world.unitsById[unitId];
+    if (!unit) continue;
+    events.push(...interruptIfMoving(session, unit.id, type === "alternating_forward" ? "alternating_forward_order" : "retreat_order"));
+    const assignment = assignments.get(unitId);
+    const target = assignment?.target ?? unit.coord;
+    const targetPoint = assignment?.targetPoint ?? axialToMapPoint(target);
+    if (assignment?.waitReason) {
+      events.push(
+        buildEvent(session, "movement_waiting", {
+          unitId: unit.id,
+          from: unit.coord,
+          target,
+          reason: assignment.waitReason,
+        }),
+      );
+      continue;
+    }
+    if (!tacticalMoveHasCover(session.world, unit, coveringUnitIds, threatDirection)) {
+      events.push(
+        buildEvent(session, "movement_waiting", {
+          unitId: unit.id,
+          from: unit.coord,
+          target,
+          reason: type === "alternating_forward" ? "advance_cover_missing" : "retreat_cover_missing",
+        }),
+      );
+      continue;
+    }
+    const pathResult = nearestPath(session.world, unit.coord, target, {
+      blocked: occupiedHexes(session.world, unit.id),
+      allowTarget: true,
+      maxVisited: 1200,
+    });
+    if (pathResult.path.length > 0) {
+      startedMovingUnitIds.push(unit.id);
+      events.push(
+        buildEvent(session, "movement_started", {
+          unitId: unit.id,
+          target,
+          targetPoint,
+          path: pathResult.path,
+          orderId,
+          reason: type === "alternating_forward" ? "alternating_forward_bound" : "retreat_bound",
+        }),
+      );
+    } else {
+      events.push(
+        buildEvent(session, "movement_waiting", {
+          unitId: unit.id,
+          from: unit.coord,
+          target,
+          reason: type === "alternating_forward" ? "advance_no_path" : "retreat_no_path",
+        }),
+      );
+    }
+  }
+  maneuverStarted.payload.boundStartedUnitIds = [...startedMovingUnitIds];
+
+  return appendAndApply(session, events);
+}
+
+function ensureCasualtyTeamForTacticalManeuver(
+  session: Session,
+  issuer: Unit,
+  type: TacticalManeuverType,
+  issuedAt: number,
+): Session {
+  const evacuation = session.world.casualtyEvacuation;
+  if (evacuation && evacuation.phase !== "completed") {
+    return session;
+  }
+  const casualty = casualtyForEvacuation(session.world, issuer.coord);
+  if (!casualty || casualty.side !== "friendly" || !isUnitInjured(casualty)) {
+    return session;
+  }
+  const helpers = casualtyHelpers(session.world, casualty, issuer.id);
+  if (helpers.length < 2 || !helpers.every((helper) => hexDistance(helper.coord, casualty.coord) <= 1)) {
+    return session;
+  }
+
+  const orderId = `${session.id}_cas_auto_${session.events.length}`;
+  const casualtyTarget = draggedCasualtyFollowCoord(session.world, casualty, helpers) ?? casualty.coord;
+  const helperTargets = helperEscortTargets(session.world, casualty.coord, helpers, casualtyTarget);
+  const mode = casualtyTeamModeForManeuver(type) ?? casualtyTeamModeForWorld(session.world);
+  const helperUnitIds = helpers.map((helper) => helper.id);
+
+  return appendAndApply(session, [
+    buildEvent(session, "casualty_evacuation_started", {
+      orderId,
+      issuerId: issuer.id,
+      casualtyUnitId: casualty.id,
+      helperUnitIds,
+      carrierUnitIds: helperUnitIds,
+      underFire: true,
+      phase: "moving_to_casualty",
+      issuedAt,
+    }),
+    buildEvent(session, "casualty_drag_started", {
+      orderId,
+      casualtyUnitId: casualty.id,
+      helperUnitIds,
+      carrierUnitIds: helperUnitIds,
+      assignedElement: tacticalTeamElement(casualty.element),
+      mode,
+      teamIntent: "holding",
+      teamTarget: casualtyTarget,
+      teamTargetPoint: axialToMapPoint(casualtyTarget),
+      carrierSlots: Object.fromEntries([...helperTargets.entries()]),
+      carrierSlotPoints: Object.fromEntries([...helperTargets.entries()].map(([unitId, coord]) => [unitId, axialToMapPoint(coord)])),
+      casualtySlot: casualtyTarget,
+      casualtySlotPoint: axialToMapPoint(casualtyTarget),
+    }),
+    buildEvent(session, "status_report_emitted", {
+      sourceUnitId: helpers[0].id,
+      kind: "status",
+      message: `${casualty.name} bärs med gruppen`,
+      coord: helpers[0].coord,
+      confidence: "high",
+      relatedUnitId: casualty.id,
+    }),
   ]);
 }
 
@@ -1843,17 +2388,9 @@ function dispatchCasualtyEvacuation(
     ? session.world.casualtyEvacuation?.collectionPoints?.[collectionPointId]
     : undefined;
   const collectionPoint = command.target ?? storedCollectionPoint?.coord ?? session.world.casualtyEvacuation?.collectionPoint;
-  if (!collectionPoint) {
-    return appendAndApply(session, [
-      buildEvent(session, "command_rejected", {
-        reason: "casualty_collection_missing",
-        command,
-      }),
-    ]);
-  }
 
-  const collectionTile = session.world.map.tilesByKey[hexKey(collectionPoint)];
-  if (!collectionTile || isImpassable(collectionTile)) {
+  const collectionTile = collectionPoint ? session.world.map.tilesByKey[hexKey(collectionPoint)] : undefined;
+  if (collectionPoint && (!collectionTile || isImpassable(collectionTile))) {
     return appendAndApply(session, [
       buildEvent(session, "command_rejected", {
         reason: "casualty_collection_not_passable",
@@ -1862,9 +2399,7 @@ function dispatchCasualtyEvacuation(
     ]);
   }
 
-  const casualty =
-    (command.casualtyUnitId ? session.world.unitsById[command.casualtyUnitId] : undefined) ??
-    nearestWoundedFriendly(session.world, issuer.coord);
+  const casualty = casualtyForEvacuation(session.world, issuer.coord, command.casualtyUnitId);
   if (!casualty || casualty.side !== "friendly" || !isUnitInjured(casualty)) {
     return appendAndApply(session, [
       buildEvent(session, "command_rejected", {
@@ -1901,17 +2436,19 @@ function dispatchCasualtyEvacuation(
       issuerId: issuer.id,
       casualtyUnitId: casualty.id,
       helperUnitIds: helpers.map((helper) => helper.id),
+      carrierUnitIds: helpers.map((helper) => helper.id),
+      underFire: true,
       collectionPointId,
-      label: casualtyCollectionPointLabel(collectionPointId),
+      label: collectionPoint ? casualtyCollectionPointLabel(collectionPointId) : undefined,
       collectionPoint,
-      collectionPointPoint: storedCollectionPoint?.point ?? axialToMapPoint(collectionPoint),
+      collectionPointPoint: collectionPoint ? (storedCollectionPoint?.point ?? axialToMapPoint(collectionPoint)) : undefined,
       phase: "moving_to_casualty",
       issuedAt: command.issuedAt,
     }),
     buildEvent(session, "status_report_emitted", {
       sourceUnitId: issuer.id,
       kind: "status",
-      message: `${casualty.name} omhändertas, ${casualtyCollectionPointLabel(collectionPointId)} ${collectionPoint.q},${collectionPoint.r}`,
+      message: `${casualty.name} omhändertas av bärarlag`,
       coord: issuer.coord,
       confidence: "high",
       relatedUnitId: casualty.id,
@@ -1985,15 +2522,25 @@ function dispatchFormationToTarget(
     ]);
   }
 
+  const casualtyBlocked = rejectOrderForUnsecuredCasualty(session, issuer, command);
+  if (casualtyBlocked) {
+    return casualtyBlocked;
+  }
+
   const orderId = `${session.id}_order_${session.events.length}`;
-  const receivers = formationReceivers(session.world, issuer.id);
+  const receivers = commandableFormationReceivers(session.world, issuer.id);
   const direction = explicitDirection ?? directionBetween(issuer.coord, target) ?? session.world.activeFormation?.direction ?? issuer.facing;
-  const targetPoint = explicitTargetPoint ?? axialToMapPoint(target);
   const directionVector =
     directionVectorFromTargetPoint(issuer.position, explicitDirectionTargetPoint) ??
     directionVectorFromTarget(issuer.position, explicitDirectionTarget) ??
     (orderKind === "forward" ? session.world.activeFormation?.directionVector : undefined) ??
     directionVectorFromHexDirection(direction);
+  const rawTargetPoint = explicitTargetPoint ?? axialToMapPoint(target);
+  const targetPoint =
+    formation === "file"
+      ? fileFormationTargetPointForCasualtyBlock(session.world, receivers, rawTargetPoint, directionVector)
+      : rawTargetPoint;
+  const effectiveTarget = mapPointToHex(targetPoint);
   const assignments = formationAssignments(session.world, receivers, formation, targetPoint, direction, directionVector);
   const receptions = resolveOrderReceptions(session.world, issuer, receivers, communication);
   const events: DomainEvent[] = [
@@ -2004,7 +2551,7 @@ function dispatchFormationToTarget(
       issuerId: issuer.id,
       receiverIds: receivers.map((receiver) => receiver.id),
       formation,
-      target,
+      target: effectiveTarget,
       targetPoint,
       phase: forwardPlan?.phase,
       advanceTarget: forwardPlan?.advanceTarget,
@@ -2080,6 +2627,69 @@ function dispatchFormationToTarget(
   return appendAndApply(session, events);
 }
 
+function rejectOrderForUnsecuredCasualty(session: Session, issuer: Unit, command: PlayerCommand): Session | undefined {
+  const casualty = unsecuredFriendlyCasualty(session.world);
+  if (!casualty) {
+    return undefined;
+  }
+
+  const receivers = commandableFormationReceivers(session.world, issuer.id);
+  const movingUnits = receivers.filter((unit) => unit.intent.type === "moving");
+  const events: DomainEvent[] = [
+    buildEvent(session, "command_rejected", {
+      reason: "unsecured_casualty",
+      command,
+      casualtyUnitId: casualty.id,
+    }),
+  ];
+
+  if (session.world.activeFormation || session.world.activeManeuver || movingUnits.length > 0) {
+    events.push(
+      buildEvent(session, "group_halted", {
+        issuerId: issuer.id,
+        unitIds: session.world.units.filter((unit) => unit.side === "friendly").map((unit) => unit.id),
+        reason: "unsecured_casualty",
+        relatedUnitId: casualty.id,
+      }),
+    );
+  }
+
+  for (const unit of receivers) {
+    events.push(
+      buildEvent(session, "movement_waiting", {
+        unitId: unit.id,
+        from: unit.coord,
+        target: unit.intent.type === "moving" ? unit.intent.target : unit.coord,
+        reason: "unsecured_casualty",
+        relatedUnitId: casualty.id,
+      }),
+    );
+  }
+
+  for (const unit of movingUnits) {
+    events.push(
+      buildEvent(session, "movement_interrupted", {
+        unitId: unit.id,
+        reason: "unsecured_casualty",
+        relatedUnitId: casualty.id,
+      }),
+    );
+  }
+
+  events.push(
+    buildEvent(session, "status_report_emitted", {
+      sourceUnitId: issuer.id,
+      kind: "status",
+      message: `${casualty.name} skadad, starta bärarlag innan ny förflyttning`,
+      coord: casualty.coord,
+      confidence: "high",
+      relatedUnitId: casualty.id,
+    }),
+  );
+
+  return appendAndApply(session, events);
+}
+
 function buildInitialWorld(
   sessionId: string,
   seed: string,
@@ -2094,7 +2704,7 @@ function buildInitialWorld(
     name: "Andersson",
     side: "friendly",
     role: "soldier",
-    element: "command",
+    element: "tat_1",
     position: axialToMapPoint(start),
     coord: start,
     facing: overrides?.player?.facing ?? scenarioOption.facing,
@@ -2102,6 +2712,8 @@ function buildInitialWorld(
     health: 100,
     stamina: 100,
     stress: 10,
+    suppression: 0,
+    fireCooldown: 0,
     posture: overrides?.player?.posture ?? "standing",
     status: [],
     intent: { type: "idle" },
@@ -2113,24 +2725,40 @@ function buildInitialWorld(
       : scenarioOption.kind === "risk_zone"
         ? buildRiskZoneUnits(overrides, scenarioOption)
         : [player];
+  if (scenarioOption.id === "casualty_retreat") {
+    const wounded = friendlies.find((unit) => unit.id === "FRIENDLY_6");
+    if (wounded) {
+      wounded.health = 35;
+      wounded.posture = "injured";
+      wounded.stamina = 35;
+      wounded.status = Array.from(new Set([...wounded.status, "injured", "primary_casualty"]));
+    }
+  }
   const opposingOverrides = overrides?.opposing ?? defaultOpposingForScenario(scenarioOption.id);
-  const opposing = opposingOverrides.map((unit, index): Unit => ({
-    id: unit.id ?? `OP_${index + 1}`,
-    name: `Observer ${index + 1}`,
-    side: "opposing",
-    role: "observer",
-    position: axialToMapPoint(unit.coord ?? { q: 60 + index * 4, r: 45 + index * 4 }),
-    coord: unit.coord ?? { q: 60 + index * 4, r: 45 + index * 4 },
-    facing: unit.facing ?? "NW",
-    lookDirection: unit.lookDirection ?? unit.facing ?? "NW",
-    health: 100,
-    stamina: 100,
-    stress: 0,
-    posture: unit.posture ?? "crouched",
-    status: [],
-    intent: { type: "idle" },
-    alerted: false,
-  }));
+  const opposing = opposingOverrides.map((unit, index): Unit => {
+    const coord = unit.coord ?? { q: 60 + index * 4, r: 45 + index * 4 };
+    const facing = unit.facing ?? "NW";
+    const tile = map.tilesByKey[hexKey(coord)];
+    return {
+      id: unit.id ?? `OP_${index + 1}`,
+      name: `Observer ${index + 1}`,
+      side: "opposing",
+      role: "observer",
+      position: axialToMapPoint(coord),
+      coord,
+      facing,
+      lookDirection: unit.lookDirection ?? facing,
+      health: 100,
+      stamina: 100,
+      stress: 0,
+      suppression: 0,
+      fireCooldown: 0,
+      posture: unit.posture ?? "crouched",
+      status: initialOpposingStatus(tile, unit.status ?? []),
+      intent: { type: "idle" },
+      alerted: unit.alerted ?? false,
+    };
+  });
 
   return refreshVisibilityMemory(indexWorld({
       id: sessionId,
@@ -2212,29 +2840,76 @@ function scenarioTerrainPatches(
       paintBridge(bridge.coord, bridge.radius ?? 0);
     }
   }
+  for (const prepared of preparedOpposingPositionsForScenario(scenarioOption.id)) {
+    paintRadius(prepared.coord, prepared.radius ?? 0, prepared.terrain);
+  }
 
   return [...patches.values()];
 }
 
-function defaultOpposingForScenario(
+function preparedOpposingPositionsForScenario(
   scenarioId: ScenarioId,
-): Array<Partial<Pick<Unit, "id" | "coord" | "facing" | "lookDirection" | "posture">>> {
-  if (scenarioId === "river_bridge_crossing") {
+): Array<{ coord: HexCoord; terrain: TerrainType; radius?: number }> {
+  if (scenarioId === "leader_lost_picture") {
     return [
-      { id: "OP_1", coord: { q: 29, r: 45 }, facing: "SW", lookDirection: "SW", posture: "crouched" },
-      { id: "OP_2", coord: { q: 36, r: 44 }, facing: "SW", lookDirection: "SW", posture: "crouched" },
+      { coord: { q: 16, r: 49 }, terrain: "ditch", radius: 1 },
+      { coord: { q: 26, r: 55 }, terrain: "ditch", radius: 1 },
+    ];
+  }
+  if (scenarioId === "casualty_retreat") {
+    return [
+      { coord: { q: 30, r: 49 }, terrain: "ditch", radius: 1 },
+      { coord: { q: 31, r: 54 }, terrain: "ditch", radius: 1 },
     ];
   }
   if (scenarioId === "ditch_line_contact") {
     return [
-      { id: "OP_1", coord: { q: 28, r: 54 }, facing: "SW", lookDirection: "SW", posture: "crouched" },
-      { id: "OP_2", coord: { q: 36, r: 55 }, facing: "SW", lookDirection: "SW", posture: "crouched" },
+      { coord: { q: 28, r: 54 }, terrain: "ditch", radius: 1 },
+      { coord: { q: 36, r: 55 }, terrain: "ditch", radius: 1 },
+    ];
+  }
+  if (scenarioId === "river_bridge_crossing") {
+    return [
+      { coord: { q: 29, r: 45 }, terrain: "ditch", radius: 1 },
+      { coord: { q: 36, r: 44 }, terrain: "forest", radius: 1 },
+    ];
+  }
+  return [];
+}
+
+function initialOpposingStatus(tile: HexTile | undefined, requestedStatus: string[]): string[] {
+  const status = new Set(requestedStatus);
+  if (tile && tile.cover > 0) status.add("in_cover");
+  if (tile && tile.concealment > 0) status.add("concealed");
+  if (status.has("prepared_position")) {
+    status.add("alerted");
+  }
+  return [...status];
+}
+
+function defaultOpposingForScenario(scenarioId: ScenarioId): OpposingUnitSeed[] {
+  if (scenarioId === "river_bridge_crossing") {
+    return [
+      { id: "OP_1", coord: { q: 29, r: 45 }, facing: "SW", lookDirection: "SW", posture: "crouched", alerted: true, status: ["prepared_position"] },
+      { id: "OP_2", coord: { q: 36, r: 44 }, facing: "SW", lookDirection: "SW", posture: "crouched", alerted: true, status: ["prepared_position"] },
+    ];
+  }
+  if (scenarioId === "ditch_line_contact") {
+    return [
+      { id: "OP_1", coord: { q: 28, r: 54 }, facing: "SW", lookDirection: "SW", posture: "crouched", alerted: true, status: ["prepared_position"] },
+      { id: "OP_2", coord: { q: 36, r: 55 }, facing: "SW", lookDirection: "SW", posture: "crouched", alerted: true, status: ["prepared_position"] },
     ];
   }
   if (scenarioId === "leader_lost_picture") {
     return [
-      { id: "OP_1", coord: { q: 16, r: 49 }, facing: "NW", lookDirection: "NW", posture: "crouched" },
-      { id: "OP_2", coord: { q: 26, r: 55 }, facing: "NW", lookDirection: "NW", posture: "crouched" },
+      { id: "OP_1", coord: { q: 16, r: 49 }, facing: "NW", lookDirection: "NW", posture: "crouched", alerted: true, status: ["prepared_position"] },
+      { id: "OP_2", coord: { q: 26, r: 55 }, facing: "NW", lookDirection: "NW", posture: "crouched", alerted: true, status: ["prepared_position"] },
+    ];
+  }
+  if (scenarioId === "casualty_retreat") {
+    return [
+      { id: "OP_1", coord: { q: 30, r: 49 }, facing: "SW", lookDirection: "SW", posture: "crouched", alerted: true, status: ["prepared_position"] },
+      { id: "OP_2", coord: { q: 31, r: 54 }, facing: "NW", lookDirection: "NW", posture: "crouched", alerted: true, status: ["prepared_position"] },
     ];
   }
   if (scenarioId === "risk_zone_blocking") {
@@ -2277,7 +2952,7 @@ function buildGroupCommanderUnits(overrides?: PhaseOneOverrides, scenarioOption 
     name: "Lind",
     side: "friendly",
     role: "leader",
-    element: "command",
+    element: "tat_1",
     elementPosition: 1,
     position: axialToMapPoint(start),
     coord: start,
@@ -2286,6 +2961,8 @@ function buildGroupCommanderUnits(overrides?: PhaseOneOverrides, scenarioOption 
     health: 100,
     stamina: 100,
     stress: 12,
+    suppression: 0,
+    fireCooldown: 0,
     posture: overrides?.player?.posture ?? "standing",
     status: [],
     intent: { type: "idle" },
@@ -2297,8 +2974,8 @@ function buildGroupCommanderUnits(overrides?: PhaseOneOverrides, scenarioOption 
     name: "Nordin",
     side: "friendly",
     role: "deputy_leader",
-    element: "command",
-    elementPosition: 2,
+    element: "tat_2",
+    elementPosition: 1,
     position: axialToMapPoint({ q: leader.coord.q, r: leader.coord.r + 1 }),
     coord: { q: leader.coord.q, r: leader.coord.r + 1 },
     facing: leader.facing,
@@ -2306,6 +2983,8 @@ function buildGroupCommanderUnits(overrides?: PhaseOneOverrides, scenarioOption 
     health: 100,
     stamina: 100,
     stress: 11,
+    suppression: 0,
+    fireCooldown: 0,
     posture: "standing",
     status: [],
     intent: { type: "idle" },
@@ -2313,12 +2992,12 @@ function buildGroupCommanderUnits(overrides?: PhaseOneOverrides, scenarioOption 
   };
 
   const soldierSpecs: Array<Pick<Unit, "id" | "name" | "coord" | "element" | "elementPosition">> = [
-    { id: "FRIENDLY_1", name: "Andersson", coord: addCoord(start, { q: -1, r: 1 }), element: "tat_1", elementPosition: 1 },
-    { id: "FRIENDLY_2", name: "Berg", coord: addCoord(start, { q: -1, r: 0 }), element: "tat_1", elementPosition: 2 },
-    { id: "FRIENDLY_3", name: "Ceder", coord: addCoord(start, { q: -2, r: 1 }), element: "tat_1", elementPosition: 3 },
-    { id: "FRIENDLY_4", name: "Dahl", coord: addCoord(start, { q: 1, r: 0 }), element: "tat_2", elementPosition: 1 },
-    { id: "FRIENDLY_5", name: "Ek", coord: addCoord(start, { q: 1, r: -1 }), element: "tat_2", elementPosition: 2 },
-    { id: "FRIENDLY_6", name: "Falk", coord: addCoord(start, { q: 2, r: -1 }), element: "tat_2", elementPosition: 3 },
+    { id: "FRIENDLY_1", name: "Andersson", coord: addCoord(start, { q: -1, r: 1 }), element: "tat_1", elementPosition: 2 },
+    { id: "FRIENDLY_2", name: "Berg", coord: addCoord(start, { q: -1, r: 0 }), element: "tat_1", elementPosition: 3 },
+    { id: "FRIENDLY_3", name: "Ceder", coord: addCoord(start, { q: -2, r: 1 }), element: "tat_1", elementPosition: 4 },
+    { id: "FRIENDLY_4", name: "Dahl", coord: addCoord(start, { q: 1, r: 0 }), element: "tat_2", elementPosition: 2 },
+    { id: "FRIENDLY_5", name: "Ek", coord: addCoord(start, { q: 1, r: -1 }), element: "tat_2", elementPosition: 3 },
+    { id: "FRIENDLY_6", name: "Falk", coord: addCoord(start, { q: 2, r: -1 }), element: "tat_2", elementPosition: 4 },
   ];
 
   const soldiers = soldierSpecs.map(
@@ -2336,6 +3015,8 @@ function buildGroupCommanderUnits(overrides?: PhaseOneOverrides, scenarioOption 
       health: 100,
       stamina: 100,
       stress: 10,
+      suppression: 0,
+      fireCooldown: 0,
       posture: "standing",
       status: [],
       intent: { type: "idle" },
@@ -2354,7 +3035,7 @@ function buildRiskZoneUnits(overrides?: PhaseOneOverrides, scenarioOption = scen
     name: "Lind",
     side: "friendly",
     role: "leader",
-    element: "command",
+    element: "tat_1",
     elementPosition: 1,
     position: axialToMapPoint(start),
     coord: start,
@@ -2363,6 +3044,8 @@ function buildRiskZoneUnits(overrides?: PhaseOneOverrides, scenarioOption = scen
     health: 100,
     stamina: 100,
     stress: 8,
+    suppression: 0,
+    fireCooldown: 0,
     posture: overrides?.player?.posture ?? "standing",
     status: [],
     intent: { type: "idle" },
@@ -2375,7 +3058,7 @@ function buildRiskZoneUnits(overrides?: PhaseOneOverrides, scenarioOption = scen
     side: "friendly",
     role: "soldier",
     element: "tat_1",
-    elementPosition: 1,
+    elementPosition: 2,
     position: axialToMapPoint(wingmanCoord),
     coord: wingmanCoord,
     facing: leader.facing,
@@ -2383,6 +3066,8 @@ function buildRiskZoneUnits(overrides?: PhaseOneOverrides, scenarioOption = scen
     health: 100,
     stamina: 100,
     stress: 10,
+    suppression: 0,
+    fireCooldown: 0,
     posture: "standing",
     status: [],
     intent: { type: "idle" },
@@ -2449,10 +3134,23 @@ function appendAndApply(session: Session, newEvents: DomainEvent[]): Session {
 function applyEvent(world: WorldState, event: DomainEvent): WorldState {
   const next = mutableWorldForEvent(world);
   if (event.type === "time_advanced") {
+    const seconds = Number(event.payload.seconds ?? 0);
     next.time = Number(event.payload.to);
+    for (const unit of next.units) {
+      unit.suppression = clamp((unit.suppression ?? 0) - seconds * SUPPRESSION_DECAY_PER_SECOND, 0, 1);
+      unit.fireCooldown = Math.max(0, (unit.fireCooldown ?? 0) - seconds);
+      if (unit.suppression <= 0) {
+        unit.status = unit.status.filter((status) => status !== "suppressed");
+      }
+    }
   }
   if (event.type === "movement_started") {
     const unit = mutableUnit(next, String(event.payload.unitId));
+    if (isUnitInjured(unit) || next.casualtyTeam?.casualtyUnitId === unit.id || unit.status.includes("being_dragged")) {
+      unit.intent = { type: "idle" };
+      syncCasualtyTeamCarriedUnit(next);
+      return refreshVisibilityMemory(next);
+    }
     unit.intent = {
       type: "moving",
       target: clone(event.payload.target as HexCoord),
@@ -2485,6 +3183,7 @@ function applyEvent(world: WorldState, event: DomainEvent): WorldState {
     unit.facing = String(event.payload.facing) as Direction;
     unit.lookDirection = unit.facing;
     unit.intent = clone(event.payload.intent as UnitIntent);
+    syncDraggedCasualtyWithCarriers(next, unit.id);
   }
   if (event.type === "movement_completed" || event.type === "movement_blocked") {
     const unit = maybeMutableUnit(next, String(event.payload.unitId));
@@ -2496,6 +3195,7 @@ function applyEvent(world: WorldState, event: DomainEvent): WorldState {
         }
       }
       unit.intent = { type: "idle" };
+      syncDraggedCasualtyWithCarriers(next, unit.id);
     }
   }
   if (event.type === "posture_changed") {
@@ -2556,6 +3256,108 @@ function applyEvent(world: WorldState, event: DomainEvent): WorldState {
       advanceTargetPoint: undefined,
     };
   }
+  if (event.type === "group_halted" && next.activeManeuver) {
+    next.activeManeuver = { ...next.activeManeuver, phase: "completed", movingUnitIds: [], coveringUnitIds: [] };
+    for (const unit of next.units.filter((candidate) => candidate.side === "friendly")) {
+      unit.status = unit.status.filter(
+        (status) => status !== "covering_fire" && status !== "retreat_moving" && status !== "forward_moving" && status !== "reinforcement",
+      );
+    }
+    updateCasualtyTeamState(next, { mode: casualtyTeamModeForWorld(next), teamIntent: "holding", waitReason: undefined });
+  }
+  if (event.type === "tactical_maneuver_started" || event.type === "tactical_maneuver_phase_changed") {
+    const movingUnitIds = clone((event.payload.movingUnitIds as string[] | undefined) ?? []);
+    const coveringUnitIds = clone((event.payload.coveringUnitIds as string[] | undefined) ?? []);
+    const existing = next.activeManeuver;
+    next.activeManeuver = {
+      orderId: String(event.payload.orderId ?? existing?.orderId),
+      type: String(event.payload.type ?? existing?.type ?? "alternating_retreat") as TacticalManeuverType,
+      phase: String(event.payload.phase ?? "moving") as TacticalManeuverPhase,
+      direction: String(event.payload.direction ?? existing?.direction ?? "SW") as Direction,
+      directionVector: event.payload.directionVector ? clone(event.payload.directionVector as MapVector) : existing?.directionVector,
+      communication: String(event.payload.communication ?? existing?.communication ?? "voice") as CommunicationMethod,
+      coveringUnitIds,
+      movingUnitIds,
+      casualtyUnitId: event.payload.casualtyUnitId ? String(event.payload.casualtyUnitId) : existing?.casualtyUnitId,
+      carrierUnitIds: event.payload.carrierUnitIds ? clone(event.payload.carrierUnitIds as string[]) : existing?.carrierUnitIds,
+      requestedReinforcement: event.payload.requestedReinforcement
+        ? clone(event.payload.requestedReinforcement as TacticalManeuverState["requestedReinforcement"])
+        : existing?.requestedReinforcement,
+      zipperSide: event.payload.zipperSide === "right" ? "right" : event.payload.zipperSide === "left" ? "left" : existing?.zipperSide,
+      stepIndex: Number(event.payload.stepIndex ?? existing?.stepIndex ?? 0),
+      boundIndex: Number(event.payload.boundIndex ?? existing?.boundIndex ?? 0),
+      boundStartedUnitIds: clone((event.payload.boundStartedUnitIds as string[] | undefined) ?? []),
+      issuedAt: Number(event.payload.issuedAt ?? existing?.issuedAt ?? event.time),
+    };
+    const moving = new Set(movingUnitIds);
+    const covering = new Set(coveringUnitIds);
+    const movingStatus = next.activeManeuver.type === "alternating_forward" ? "forward_moving" : "retreat_moving";
+    for (const unit of next.units.filter((candidate) => candidate.side === "friendly")) {
+      const base = unit.status.filter((status) => status !== "covering_fire" && status !== "retreat_moving" && status !== "forward_moving");
+      if (moving.has(unit.id)) base.push(movingStatus);
+      if (covering.has(unit.id)) base.push("covering_fire");
+      unit.status = Array.from(new Set(base));
+      if (covering.has(unit.id)) {
+        unit.posture = unit.posture === "injured" ? unit.posture : "crouched";
+      }
+    }
+    updateCasualtyTeamState(next);
+  }
+  if (event.type === "casualty_team_updated") {
+    const carrierUnitIds = clone((event.payload.carrierUnitIds as string[] | undefined) ?? next.casualtyTeam?.carrierUnitIds ?? []);
+    const carrierSlots = clone((event.payload.carrierSlots as Record<string, HexCoord> | undefined) ?? next.casualtyTeam?.carrierSlots ?? {});
+    const carrierSlotPoints = clone((event.payload.carrierSlotPoints as Record<string, MapPoint> | undefined) ?? next.casualtyTeam?.carrierSlotPoints ?? {});
+    updateCasualtyTeamState(next, {
+      casualtyUnitId: String(event.payload.casualtyUnitId ?? next.casualtyTeam?.casualtyUnitId ?? next.casualtyEvacuation?.casualtyUnitId),
+      carrierUnitIds,
+      assignedElement: event.payload.assignedElement ? String(event.payload.assignedElement) as GroupElement : next.casualtyTeam?.assignedElement,
+      mode: String(event.payload.mode ?? next.casualtyTeam?.mode ?? casualtyTeamModeForWorld(next)) as CasualtyTeamMode,
+      teamIntent: String(event.payload.teamIntent ?? next.casualtyTeam?.teamIntent ?? "holding") as CasualtyTeamIntent,
+      teamTarget: event.payload.teamTarget ? clone(event.payload.teamTarget as HexCoord) : next.casualtyTeam?.teamTarget,
+      teamTargetPoint: event.payload.teamTargetPoint ? clone(event.payload.teamTargetPoint as MapPoint) : next.casualtyTeam?.teamTargetPoint,
+      carrierSlots,
+      carrierSlotPoints,
+      casualtySlot: event.payload.casualtySlot ? clone(event.payload.casualtySlot as HexCoord) : next.casualtyTeam?.casualtySlot,
+      casualtySlotPoint: event.payload.casualtySlotPoint ? clone(event.payload.casualtySlotPoint as MapPoint) : next.casualtyTeam?.casualtySlotPoint,
+      waitReason: event.payload.waitReason ? String(event.payload.waitReason) as CasualtyTeamWaitReason : undefined,
+      updatedAt: Number(event.payload.updatedAt ?? event.time),
+    });
+    syncCasualtyTeamCarriedUnit(next);
+  }
+  if (event.type === "friendly_fire_delivered") {
+    const unit = maybeMutableUnit(next, String(event.payload.unitId));
+    if (unit) {
+      unit.lastFiredAt = event.time;
+      unit.fireCooldown = RETREAT_FIRE_INTERVAL_SECONDS;
+      unit.stamina = clamp(unit.stamina - COVERING_FIRE_STAMINA_COST, 0, 100);
+      unit.status = Array.from(new Set([...unit.status, "covering_fire"]));
+    }
+  }
+  if (event.type === "suppression_applied") {
+    const unit = maybeMutableUnit(next, String(event.payload.unitId));
+    if (unit) {
+      unit.suppression = clamp(unit.suppression + Number(event.payload.amount ?? FRIENDLY_FIRE_SUPPRESSION), 0, 1);
+      unit.status = Array.from(new Set([...unit.status, "suppressed"]));
+      if (unit.side === "opposing") {
+        const tile = next.map.tilesByKey[hexKey(unit.coord)];
+        if (unit.posture === "standing" || unit.posture === "moving") {
+          unit.posture = "crouched";
+        }
+        unit.status = initialOpposingStatus(tile, unit.status);
+      }
+    }
+  }
+  if (event.type === "stamina_changed") {
+    const unit = maybeMutableUnit(next, String(event.payload.unitId));
+    if (unit) {
+      unit.stamina = clamp(unit.stamina + Number(event.payload.delta ?? 0), 0, 100);
+      if (unit.stamina < CASUALTY_REINFORCEMENT_STAMINA_THRESHOLD) {
+        unit.status = Array.from(new Set([...unit.status, "tired"]));
+      } else {
+        unit.status = unit.status.filter((status) => status !== "tired");
+      }
+    }
+  }
   if (event.type === "order_delivery_resolved" && event.payload.status === "received") {
     const unit = maybeMutableUnit(next, String(event.payload.unitId));
     if (unit) {
@@ -2581,7 +3383,13 @@ function applyEvent(world: WorldState, event: DomainEvent): WorldState {
       unit.health = Math.min(unit.health, Number(event.payload.health ?? 35));
       unit.posture = "injured";
       unit.intent = { type: "idle" };
-      unit.status = Array.from(new Set([...unit.status, "injured"]));
+      unit.currentOrderId = undefined;
+      unit.status = Array.from(
+        new Set([
+          ...unit.status.filter((status) => status !== "covering_fire" && status !== "retreat_moving" && status !== "forward_moving"),
+          "injured",
+        ]),
+      );
     }
   }
   if (event.type === "casualty_collection_point_set") {
@@ -2612,31 +3420,36 @@ function applyEvent(world: WorldState, event: DomainEvent): WorldState {
   }
   if (event.type === "casualty_evacuation_started") {
     const helperUnitIds = clone((event.payload.helperUnitIds as string[] | undefined) ?? []);
-    const collectionPointId: CasualtyCollectionPointId = event.payload.collectionPointId === "asa2" ? "asa2" : "asa1";
-    const coord = clone(event.payload.collectionPoint as HexCoord);
-    const point = clone(
-      (event.payload.collectionPointPoint as MapPoint | undefined) ?? axialToMapPoint(event.payload.collectionPoint as HexCoord),
-    );
+    const collectionPointId: CasualtyCollectionPointId | undefined =
+      event.payload.collectionPointId === "asa2" ? "asa2" : event.payload.collectionPointId === "asa1" ? "asa1" : undefined;
+    const coord = event.payload.collectionPoint ? clone(event.payload.collectionPoint as HexCoord) : undefined;
+    const point = coord
+      ? clone((event.payload.collectionPointPoint as MapPoint | undefined) ?? axialToMapPoint(coord))
+      : undefined;
     const existing = next.casualtyEvacuation ?? { helperUnitIds: [], phase: "idle" as const };
     next.casualtyEvacuation = {
       ...existing,
       collectionPointId,
       activeCollectionPointId: collectionPointId,
-      collectionPoints: {
-        ...(existing.collectionPoints ?? {}),
-        [collectionPointId]: {
-          id: collectionPointId,
-          label: casualtyCollectionPointLabel(collectionPointId),
-          coord,
-          point,
-          setAt: Number(event.payload.issuedAt ?? event.time),
-        },
-      },
+      collectionPoints: coord && collectionPointId
+        ? {
+            ...(existing.collectionPoints ?? {}),
+            [collectionPointId]: {
+              id: collectionPointId,
+              label: casualtyCollectionPointLabel(collectionPointId),
+              coord,
+              point,
+              setAt: Number(event.payload.issuedAt ?? event.time),
+            },
+          }
+        : existing.collectionPoints,
       collectionPoint: coord,
       collectionPointPoint: point,
       orderId: String(event.payload.orderId),
       casualtyUnitId: String(event.payload.casualtyUnitId),
       helperUnitIds,
+      carrierUnitIds: clone((event.payload.carrierUnitIds as string[] | undefined) ?? helperUnitIds),
+      underFire: event.payload.underFire === true,
       phase: "moving_to_casualty",
       issuedAt: Number(event.payload.issuedAt ?? event.time),
     };
@@ -2654,12 +3467,14 @@ function applyEvent(world: WorldState, event: DomainEvent): WorldState {
       orderId: String(event.payload.orderId ?? next.casualtyEvacuation?.orderId),
       casualtyUnitId: String(event.payload.casualtyUnitId ?? next.casualtyEvacuation?.casualtyUnitId),
       helperUnitIds,
+      carrierUnitIds: clone((event.payload.carrierUnitIds as string[] | undefined) ?? next.casualtyEvacuation?.carrierUnitIds ?? helperUnitIds),
       phase: "dragging",
     };
     const casualty = maybeMutableUnit(next, String(event.payload.casualtyUnitId));
     if (casualty) {
       casualty.status = Array.from(new Set([...casualty.status.filter((status) => status !== "evac_pending"), "being_dragged"]));
       casualty.currentOrderId = String(event.payload.orderId ?? casualty.currentOrderId);
+      casualty.intent = { type: "idle" };
     }
     for (const helperId of helperUnitIds) {
       const helper = maybeMutableUnit(next, helperId);
@@ -2668,6 +3483,82 @@ function applyEvent(world: WorldState, event: DomainEvent): WorldState {
       helper.status = Array.from(new Set([...helper.status, "evac_helper"]));
       helper.currentOrderId = String(event.payload.orderId ?? helper.currentOrderId);
     }
+    updateCasualtyTeamState(next, {
+      casualtyUnitId: String(event.payload.casualtyUnitId),
+      carrierUnitIds: helperUnitIds,
+      assignedElement: event.payload.assignedElement ? String(event.payload.assignedElement) as GroupElement : undefined,
+      mode: String(event.payload.mode ?? casualtyTeamModeForWorld(next)) as CasualtyTeamMode,
+      teamIntent: String(event.payload.teamIntent ?? "holding") as CasualtyTeamIntent,
+      teamTarget: event.payload.teamTarget ? clone(event.payload.teamTarget as HexCoord) : undefined,
+      teamTargetPoint: event.payload.teamTargetPoint ? clone(event.payload.teamTargetPoint as MapPoint) : undefined,
+      carrierSlots: event.payload.carrierSlots ? clone(event.payload.carrierSlots as Record<string, HexCoord>) : undefined,
+      carrierSlotPoints: event.payload.carrierSlotPoints ? clone(event.payload.carrierSlotPoints as Record<string, MapPoint>) : undefined,
+      casualtySlot: event.payload.casualtySlot ? clone(event.payload.casualtySlot as HexCoord) : undefined,
+      casualtySlotPoint: event.payload.casualtySlotPoint ? clone(event.payload.casualtySlotPoint as MapPoint) : undefined,
+    });
+    syncCasualtyTeamCarriedUnit(next);
+  }
+  if (event.type === "casualty_reinforcement_requested") {
+    if (next.casualtyEvacuation) {
+      next.casualtyEvacuation = {
+        ...next.casualtyEvacuation,
+        requestedReinforcement: {
+          unitId: event.payload.unitId ? String(event.payload.unitId) : undefined,
+          forUnitId: String(event.payload.forUnitId),
+          requestedAt: Number(event.payload.requestedAt ?? event.time),
+        },
+      };
+    }
+    const unit = maybeMutableUnit(next, String(event.payload.unitId));
+    if (unit) {
+      unit.status = Array.from(new Set([...unit.status, "reinforcement"]));
+    }
+  }
+  if (event.type === "casualty_carrier_relieved") {
+    const oldCarrierId = String(event.payload.oldCarrierId);
+    const newCarrierId = String(event.payload.newCarrierId);
+    const reliefReason = String(event.payload.reason ?? "carrier_tired");
+    const isHandoffRelief = reliefReason.includes("handoff");
+    if (next.casualtyEvacuation) {
+      const existingHelperUnitIds = uniqueIds(next.casualtyEvacuation.helperUnitIds);
+      const newCarrierAlreadyHelping = existingHelperUnitIds.includes(newCarrierId);
+      const helperUnitIds = existingHelperUnitIds.flatMap((unitId) => {
+        if (unitId !== oldCarrierId) return [unitId];
+        return newCarrierAlreadyHelping ? [] : [newCarrierId];
+      });
+      next.casualtyEvacuation = {
+        ...next.casualtyEvacuation,
+        helperUnitIds,
+        carrierUnitIds: helperUnitIds,
+        requestedReinforcement: undefined,
+      };
+    }
+    const oldCarrier = maybeMutableUnit(next, oldCarrierId);
+    if (oldCarrier) {
+      const oldCarrierInjured = isUnitInjured(oldCarrier);
+      oldCarrier.posture = oldCarrierInjured ? oldCarrier.posture : "crouched";
+      const reliefStatuses = isHandoffRelief ? ["covering_fire"] : ["tired"];
+      oldCarrier.status = Array.from(
+        new Set([
+          ...oldCarrier.status.filter((status) => status !== "evac_helper" && status !== "forward_moving" && status !== "retreat_moving" && status !== "reinforcement"),
+          ...(oldCarrierInjured ? [] : reliefStatuses),
+        ]),
+      );
+    }
+    const newCarrier = maybeMutableUnit(next, newCarrierId);
+    if (newCarrier) {
+      newCarrier.posture = "helping";
+      const newCarrierReliefStatuses = isHandoffRelief ? ["evac_helper", "covering_fire"] : ["evac_helper"];
+      newCarrier.status = Array.from(
+        new Set([
+          ...newCarrier.status.filter((status) => status !== "reinforcement" && (isHandoffRelief || status !== "covering_fire")),
+          ...newCarrierReliefStatuses,
+        ]),
+      );
+      newCarrier.currentOrderId = String(event.payload.orderId ?? newCarrier.currentOrderId);
+    }
+    updateCasualtyTeamState(next);
+    syncCasualtyTeamCarriedUnit(next);
   }
   if (event.type === "casualty_evacuation_completed") {
     if (next.casualtyEvacuation) {
@@ -2676,6 +3567,7 @@ function applyEvent(world: WorldState, event: DomainEvent): WorldState {
         phase: "completed",
       };
     }
+    next.casualtyTeam = undefined;
     const helperUnitIds = (event.payload.helperUnitIds as string[] | undefined) ?? [];
     for (const unitId of [String(event.payload.casualtyUnitId), ...helperUnitIds]) {
       const unit = maybeMutableUnit(next, unitId);
@@ -2710,13 +3602,20 @@ function interruptIfMoving(session: Session, unitId: string, reason: string): Do
   return unit.intent.type === "moving" ? [buildEvent(session, "movement_interrupted", { unitId, reason })] : [];
 }
 
-function collectMovementEvents(world: WorldState, seconds: number): Array<{ type: string; payload: Record<string, unknown> }> {
-  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+function collectMovementEvents(world: WorldState, seconds: number, random: () => number): PendingDomainEvent[] {
+  const events: PendingDomainEvent[] = [];
+  const noOneLeftBehindEvents = collectNoOneLeftBehindEvents(world);
+  if (noOneLeftBehindEvents.length > 0) {
+    return noOneLeftBehindEvents;
+  }
+
   const phaseEvents = collectForwardFormationPhaseEvents(world);
   if (phaseEvents.length > 0) {
     return phaseEvents;
   }
 
+  events.push(...collectTacticalManeuverEvents(world, seconds, random));
+  events.push(...collectFatigueEvents(world, seconds));
   events.push(...collectCasualtyEvacuationEvents(world));
   events.push(...collectEmbodiedLeaderFormationEvents(world));
 
@@ -2728,6 +3627,9 @@ function collectMovementEvents(world: WorldState, seconds: number): Array<{ type
   const cohesionStops = collectCohesionStops(world);
   for (const unit of world.units) {
     if (motivatedFormation.handledUnitIds.has(unit.id)) {
+      continue;
+    }
+    if (world.casualtyTeam?.casualtyUnitId === unit.id || unit.status.includes("being_dragged")) {
       continue;
     }
     if (unit.intent.type !== "moving" || unit.intent.path.length === 0) {
@@ -2752,6 +3654,21 @@ function collectMovementEvents(world: WorldState, seconds: number): Array<{ type
 
     const nextCoord = unit.intent.path[0];
     const nextKey = hexKey(nextCoord);
+    const dragSpacingStop = casualtyDragSpacingStop(world, unit, nextCoord);
+    if (dragSpacingStop) {
+      events.push({
+        type: "movement_waiting",
+        payload: {
+          unitId: unit.id,
+          from: unit.coord,
+          target: unit.intent.target,
+          waitingAt: nextCoord,
+          reason: dragSpacingStop.reason,
+          relatedUnitId: dragSpacingStop.relatedUnitId,
+        },
+      });
+      continue;
+    }
     const tile = world.map.tilesByKey[hexKey(nextCoord)];
     if (!tile || isImpassable(tile)) {
       events.push({ type: "movement_blocked", payload: { unitId: unit.id, from: unit.coord, target: unit.intent.target } });
@@ -2830,14 +3747,1017 @@ function collectMovementEvents(world: WorldState, seconds: number): Array<{ type
   return events;
 }
 
+function collectNoOneLeftBehindEvents(world: WorldState): Array<{ type: string; payload: Record<string, unknown> }> {
+  const casualty = unsecuredFriendlyCasualty(world);
+  if (!casualty) {
+    return [];
+  }
+
+  const maneuverActive = Boolean(world.activeManeuver && world.activeManeuver.phase !== "completed");
+  const formationActive = Boolean(world.activeFormation && (world.activeFormation.phase === "advancing" || world.activeFormation.orderKind === "forward"));
+  const orderedMovementActive = maneuverActive || formationActive;
+  const movingUnits = world.units.filter((unit) => unit.side === "friendly" && unit.intent.type === "moving" && !isUnitInjured(unit));
+  const interruptibleMovingUnits = movingUnits.filter((unit) => orderedMovementActive || !isCasualtyCareMovement(world, unit));
+  if (!orderedMovementActive && interruptibleMovingUnits.length === 0) {
+    return [];
+  }
+
+  const leader = world.units.find((unit) => unit.side === "friendly" && unit.role === "leader") ?? world.units.find((unit) => unit.side === "friendly");
+  const activeUnitIds = orderedMovementActive
+    ? world.units.filter((unit) => unit.side === "friendly" && !isUnitInjured(unit)).map((unit) => unit.id)
+    : interruptibleMovingUnits.map((unit) => unit.id);
+  const waitingUnitIds = uniqueIds([
+    ...activeUnitIds,
+    ...interruptibleMovingUnits.map((unit) => unit.id),
+    ...(world.activeManeuver?.movingUnitIds ?? []),
+  ]).filter((unitId) => {
+    const unit = world.unitsById[unitId];
+    return Boolean(unit && unit.side === "friendly" && !isUnitInjured(unit) && (orderedMovementActive || !isCasualtyCareMovement(world, unit)));
+  });
+
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  if (orderedMovementActive) {
+    events.push({
+      type: "group_halted",
+      payload: {
+        issuerId: leader?.id ?? casualty.id,
+        unitIds: world.units.filter((unit) => unit.side === "friendly").map((unit) => unit.id),
+        reason: "unsecured_casualty",
+        relatedUnitId: casualty.id,
+      },
+    });
+  }
+
+  for (const unitId of waitingUnitIds) {
+    const unit = world.unitsById[unitId];
+    if (!unit) continue;
+    events.push({
+      type: "movement_waiting",
+      payload: {
+        unitId: unit.id,
+        from: unit.coord,
+        target: unit.intent.type === "moving" ? unit.intent.target : unit.coord,
+        reason: "unsecured_casualty",
+        relatedUnitId: casualty.id,
+      },
+    });
+  }
+
+  for (const unit of interruptibleMovingUnits) {
+    events.push({
+      type: "movement_interrupted",
+      payload: {
+        unitId: unit.id,
+        reason: "unsecured_casualty",
+        relatedUnitId: casualty.id,
+      },
+    });
+  }
+
+  events.push({
+    type: "status_report_emitted",
+    payload: {
+      sourceUnitId: leader?.id ?? casualty.id,
+      kind: "status",
+      message: `${casualty.name} skadad, ingen lämnas efter`,
+      coord: casualty.coord,
+      confidence: "high",
+      relatedUnitId: casualty.id,
+    },
+  });
+  return events;
+}
+
+function unsecuredFriendlyCasualty(world: WorldState): Unit | undefined {
+  const protectedCasualtyIds = new Set<string>();
+  if (world.casualtyEvacuation?.phase !== "completed" && world.casualtyEvacuation?.casualtyUnitId) {
+    protectedCasualtyIds.add(world.casualtyEvacuation.casualtyUnitId);
+  }
+  if (world.casualtyTeam?.casualtyUnitId) {
+    protectedCasualtyIds.add(world.casualtyTeam.casualtyUnitId);
+  }
+
+  return world.units
+    .filter((unit) => unit.side === "friendly" && isUnitInjured(unit))
+    .filter((unit) => !protectedCasualtyIds.has(unit.id))
+    .filter((unit) => friendlyCarrierCapacityFor(world, unit) >= 2)
+    .sort((a, b) => {
+      const aPrimary = a.status.includes("primary_casualty") ? -1 : 0;
+      const bPrimary = b.status.includes("primary_casualty") ? -1 : 0;
+      return aPrimary - bPrimary || formationReceiverRank(a) - formationReceiverRank(b);
+    })[0];
+}
+
+function friendlyCarrierCapacityFor(world: WorldState, casualty: Unit): number {
+  return world.units.filter((unit) => unit.side === "friendly" && unit.id !== casualty.id && !isUnitInjured(unit)).length;
+}
+
+function isCasualtyCareMovement(world: WorldState, unit: Unit): boolean {
+  const evacuationOrderId = world.casualtyEvacuation?.orderId;
+  return (
+    unit.status.includes("evac_helper") ||
+    unit.status.includes("reinforcement") ||
+    (Boolean(evacuationOrderId) && unit.currentOrderId === evacuationOrderId)
+  );
+}
+
+function casualtyDragSpacingStop(world: WorldState, unit: Unit, nextCoord: HexCoord): { reason: string; relatedUnitId?: string } | undefined {
+  const evacuation = world.casualtyEvacuation;
+  const helperUnitIds = evacuation ? uniqueIds(evacuation.helperUnitIds) : [];
+  if (!evacuation || evacuation.phase !== "dragging" || !helperUnitIds.includes(unit.id) || !evacuation.casualtyUnitId) {
+    return undefined;
+  }
+  const casualty = world.unitsById[evacuation.casualtyUnitId];
+  if (!casualty) {
+    return undefined;
+  }
+  const helpers = helperUnitIds.map((unitId) => world.unitsById[unitId]).filter((candidate): candidate is Unit => Boolean(candidate));
+  const simulatedHelpers = helpers.map((helper) =>
+    helper.id === unit.id ? { ...helper, coord: nextCoord, position: axialToMapPoint(nextCoord) } : helper,
+  );
+  const followCoord = draggedCasualtyFollowCoord(world, casualty, simulatedHelpers);
+  if (!followCoord || simulatedHelpers.some((helper) => hexDistance(helper.coord, followCoord) > 2)) {
+    return { reason: "casualty_drag_spacing", relatedUnitId: casualty.id };
+  }
+  const otherHelper = simulatedHelpers.find((candidate) => candidate.id !== unit.id && hexDistance(nextCoord, candidate.coord) > 4);
+  return otherHelper ? { reason: "casualty_drag_spacing", relatedUnitId: otherHelper.id } : undefined;
+}
+
+function collectTacticalManeuverEvents(world: WorldState, _seconds: number, random: () => number): PendingDomainEvent[] {
+  const maneuver = world.activeManeuver;
+  if (!maneuver || maneuver.phase === "completed") {
+    return [];
+  }
+
+  const events: PendingDomainEvent[] = [];
+  const threatDirection = maneuverThreatDirection(maneuver.type, maneuver.direction);
+  const target = nearestVisibleOpposingUnit(world, maneuver.coveringUnitIds);
+  const neutralizedTargetIds = new Set<string>();
+  for (const unitId of maneuver.coveringUnitIds) {
+    const unit = world.unitsById[unitId];
+    if (!unit || isUnitInjured(unit) || unit.fireCooldown > 0) continue;
+    if (target && !neutralizedTargetIds.has(target.id)) {
+      const result = friendlyFireResolutionEvents(world, unit, target, threatDirection, random, {
+        deliveredReason: "covering_fire",
+        effectReason: "covering_fire",
+        maneuverOrderId: maneuver.orderId,
+      });
+      events.push(...result.events);
+      if (result.hit) {
+        neutralizedTargetIds.add(target.id);
+      }
+      continue;
+    }
+    events.push({
+      type: "friendly_fire_delivered",
+      payload: {
+        unitId,
+        targetId: target?.id,
+        direction: threatDirection,
+        reason: "covering_fire",
+        maneuverOrderId: maneuver.orderId,
+      },
+    });
+  }
+
+  if (maneuver.type !== "alternating_forward") {
+    const handoffEvents = tacticalCasualtyHandoffEvents(world, maneuver);
+    if (handoffEvents.length > 0) {
+      return [...events, ...handoffEvents];
+    }
+  }
+
+  if (maneuver.phase === "handoff") {
+    if (maneuver.type === "alternating_forward") {
+      const handoffEvents = tacticalCasualtyHandoffEvents(world, maneuver);
+      if (handoffEvents.length > 0) {
+        return [...events, ...handoffEvents];
+      }
+    }
+    if (!coveringFireReadyForManeuverBound(world, maneuver, events)) {
+      return events;
+    }
+    return [...events, ...tacticalManeuverNextBoundEvents(world, maneuver)];
+  }
+
+  const boundStartedUnitIds = (maneuver.boundStartedUnitIds ?? []).filter((unitId) => maneuver.movingUnitIds.includes(unitId));
+  if (boundStartedUnitIds.length === 0) {
+    if (!coveringFireReadyForManeuverBound(world, maneuver, events)) {
+      return events;
+    }
+    const startEvents = tacticalManeuverMovementStartEvents(world, maneuver, maneuver.movingUnitIds, maneuver.coveringUnitIds);
+    const startedUnitIds = tacticalManeuverStartedUnitIds(startEvents);
+    if (startedUnitIds.length === 0) {
+      return [...events, ...startEvents];
+    }
+    events.push({
+      type: "tactical_maneuver_phase_changed",
+      payload: {
+        orderId: maneuver.orderId,
+        type: maneuver.type,
+        phase: "moving",
+        direction: maneuver.direction,
+        directionVector: maneuver.directionVector,
+        communication: maneuver.communication,
+        coveringUnitIds: maneuver.coveringUnitIds,
+        movingUnitIds: maneuver.movingUnitIds,
+        boundStartedUnitIds: startedUnitIds,
+        zipperSide: maneuver.zipperSide,
+        stepIndex: maneuver.stepIndex ?? 0,
+        boundIndex: maneuver.boundIndex ?? 0,
+      },
+    });
+    events.push(...startEvents);
+    return events;
+  }
+
+  const movingUnits = boundStartedUnitIds.map((unitId) => world.unitsById[unitId]).filter(Boolean);
+  const movingComplete = movingUnits.length > 0 && movingUnits.every((unit) => unit.intent.type === "idle");
+  if (!movingComplete) {
+    return events;
+  }
+  if (maneuver.type === "alternating_forward") {
+    return [
+      ...events,
+      tacticalManeuverHandoffEvent(world, maneuver, boundStartedUnitIds),
+      tacticalManeuverHandoffStatusEvent(world, maneuver, boundStartedUnitIds),
+    ];
+  }
+  if (!coveringFireReadyForManeuverBound(world, maneuver, events)) {
+    return events;
+  }
+  return [...events, ...tacticalManeuverNextBoundEvents(world, maneuver)];
+}
+
+function tacticalManeuverHandoffEvent(
+  world: WorldState,
+  maneuver: TacticalManeuverState,
+  completedUnitIds: string[],
+): { type: string; payload: Record<string, unknown> } {
+  const receivers = formationReceivers(world, world.units.find((unit) => unit.role === "leader")?.id ?? "")
+    .filter((unit) => !isUnitInjured(unit));
+  const coveringUnitIds = receivers.map((unit) => unit.id);
+  const sourceUnitId = completedUnitIds[0] ?? maneuver.movingUnitIds[0] ?? maneuver.coveringUnitIds[0];
+  return {
+    type: "tactical_maneuver_phase_changed",
+    payload: {
+      orderId: maneuver.orderId,
+      type: maneuver.type,
+      phase: "handoff",
+      direction: maneuver.direction,
+      directionVector: maneuver.directionVector,
+      communication: maneuver.communication,
+      coveringUnitIds,
+      movingUnitIds: [],
+      boundStartedUnitIds: [],
+      zipperSide: maneuver.zipperSide,
+      stepIndex: maneuver.stepIndex ?? 0,
+      boundIndex: maneuver.boundIndex ?? 0,
+      statusMessage: "ELDSTÄLLNINGAR",
+      sourceUnitId,
+    },
+  };
+}
+
+function tacticalManeuverHandoffStatusEvent(
+  world: WorldState,
+  maneuver: TacticalManeuverState,
+  completedUnitIds: string[],
+): { type: string; payload: Record<string, unknown> } {
+  const sourceUnitId = completedUnitIds[0] ?? maneuver.movingUnitIds[0] ?? maneuver.coveringUnitIds[0];
+  const source = sourceUnitId ? world.unitsById[sourceUnitId] : undefined;
+  return {
+    type: "status_report_emitted",
+    payload: {
+      sourceUnitId,
+      kind: "status",
+      message: "ELDSTÄLLNINGAR",
+      coord: source?.coord,
+      confidence: "high",
+      reason: "alternating_forward_handoff",
+    },
+  };
+}
+
+function tacticalManeuverNextBoundEvents(
+  world: WorldState,
+  maneuver: TacticalManeuverState,
+): Array<{ type: string; payload: Record<string, unknown> }> {
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  const nextBoundIndex = (maneuver.boundIndex ?? 0) + 1;
+  const receivers = formationReceivers(world, world.units.find((unit) => unit.role === "leader")?.id ?? "");
+  const effectiveReceivers = receivers.filter((unit) => !isUnitInjured(unit));
+  const plannedMovingUnitIds =
+    maneuver.type === "zipper_retreat"
+      ? zipperRetreatMovingUnitIds(
+          effectiveReceivers,
+          maneuver.directionVector ?? directionVectorFromHexDirection(maneuver.direction),
+          maneuver.zipperSide ?? "left",
+          (maneuver.stepIndex ?? 0) + 1,
+        )
+      : alternatingBoundMovingUnitIds(effectiveReceivers, nextBoundIndex);
+  const plannedCoveringUnitIds = effectiveReceivers.map((unit) => unit.id).filter((unitId) => !plannedMovingUnitIds.includes(unitId));
+  const { movingUnitIds: nextMovingUnitIds, coveringUnitIds: nextCoveringUnitIds } = applyCasualtyTeamBoundOwnership(
+    world,
+    maneuver.type,
+    nextBoundIndex,
+    plannedMovingUnitIds,
+    plannedCoveringUnitIds,
+  );
+  const nextStepIndex = maneuver.type === "zipper_retreat" ? (maneuver.stepIndex ?? 0) + 1 : maneuver.stepIndex ?? 0;
+  if (nextMovingUnitIds.length === 0) {
+    events.push({
+      type: "tactical_maneuver_phase_changed",
+      payload: {
+        orderId: maneuver.orderId,
+        type: maneuver.type,
+        phase: "completed",
+        direction: maneuver.direction,
+        directionVector: maneuver.directionVector,
+        communication: maneuver.communication,
+        coveringUnitIds: nextCoveringUnitIds,
+        movingUnitIds: [],
+        boundStartedUnitIds: [],
+        zipperSide: maneuver.zipperSide,
+        stepIndex: nextStepIndex,
+        boundIndex: nextBoundIndex,
+      },
+    });
+    return events;
+  }
+
+  const startEvents = tacticalManeuverMovementStartEvents(world, maneuver, nextMovingUnitIds, nextCoveringUnitIds);
+  const startedUnitIds = tacticalManeuverStartedUnitIds(startEvents);
+  if (startedUnitIds.length === 0) {
+    return [...events, ...startEvents];
+  }
+
+  events.push({
+    type: "tactical_maneuver_phase_changed",
+    payload: {
+      orderId: maneuver.orderId,
+      type: maneuver.type,
+      phase: "moving",
+      direction: maneuver.direction,
+      directionVector: maneuver.directionVector,
+      communication: maneuver.communication,
+      coveringUnitIds: nextCoveringUnitIds,
+      movingUnitIds: nextMovingUnitIds,
+      boundStartedUnitIds: startedUnitIds,
+      zipperSide: maneuver.zipperSide,
+      stepIndex: nextStepIndex,
+      boundIndex: nextBoundIndex,
+    },
+  });
+  events.push(...startEvents);
+  return events;
+}
+
+function tacticalManeuverStartedUnitIds(events: Array<{ type: string; payload: Record<string, unknown> }>): string[] {
+  return events
+    .filter((event) => event.type === "movement_started" || event.type === "movement_completed")
+    .map((event) => String(event.payload.unitId))
+    .filter(Boolean);
+}
+
+function applyCasualtyTeamBoundOwnership(
+  world: WorldState,
+  type: TacticalManeuverType,
+  boundIndex: number,
+  movingUnitIds: string[],
+  coveringUnitIds: string[],
+): { movingUnitIds: string[]; coveringUnitIds: string[] } {
+  if (type !== "alternating_forward" && type !== "alternating_retreat") {
+    return { movingUnitIds, coveringUnitIds };
+  }
+  const team = world.casualtyTeam ?? derivedCasualtyTeamState(world);
+  if (!team || team.carrierUnitIds.length < 2) {
+    return { movingUnitIds, coveringUnitIds };
+  }
+
+  const carrierUnitIds = uniqueIds(team.carrierUnitIds)
+    .filter((unitId) => Boolean(world.unitsById[unitId] && !isUnitInjured(world.unitsById[unitId])));
+  if (carrierUnitIds.length < 2) {
+    return { movingUnitIds, coveringUnitIds };
+  }
+
+  const carrierSet = new Set(carrierUnitIds);
+  const teamElement = casualtyTeamBoundElement(world, team);
+  const movingElement = alternatingBoundElement(boundIndex);
+  const moving = new Set(movingUnitIds.filter((unitId) => !carrierSet.has(unitId)));
+  const covering = new Set(coveringUnitIds.filter((unitId) => !carrierSet.has(unitId)));
+
+  if (teamElement && teamElement === movingElement) {
+    for (const unitId of carrierUnitIds) {
+      moving.add(unitId);
+    }
+  }
+
+  return {
+    movingUnitIds: sortUnitIdsByFormation(world, [...moving]),
+    coveringUnitIds: sortUnitIdsByFormation(world, [...covering]),
+  };
+}
+
+function initialTacticalManeuverBoundIndex(world: WorldState, type: TacticalManeuverType): number {
+  if (type !== "alternating_forward") {
+    return 0;
+  }
+  const team = world.casualtyTeam ?? derivedCasualtyTeamState(world);
+  const teamElement = team ? casualtyTeamBoundElement(world, team) : undefined;
+  return teamElement === "tat_2" ? 1 : 0;
+}
+
+function alternatingBoundElement(boundIndex: number): GroupElement {
+  return boundIndex % 2 === 0 ? "tat_1" : "tat_2";
+}
+
+function casualtyTeamBoundElement(world: WorldState, team: Pick<CasualtyTeamState, "assignedElement" | "casualtyUnitId">): GroupElement | undefined {
+  if (team.assignedElement === "tat_1" || team.assignedElement === "tat_2") {
+    return team.assignedElement;
+  }
+  const casualtyElement = world.unitsById[team.casualtyUnitId]?.element;
+  return casualtyElement === "tat_1" || casualtyElement === "tat_2" ? casualtyElement : undefined;
+}
+
+function sortUnitIdsByFormation(world: WorldState, unitIds: string[]): string[] {
+  return uniqueIds(unitIds)
+    .map((unitId) => world.unitsById[unitId])
+    .filter((unit): unit is Unit => Boolean(unit))
+    .sort((a, b) => formationReceiverRank(a) - formationReceiverRank(b))
+    .map((unit) => unit.id);
+}
+
+function coveringFireReadyForManeuverBound(
+  world: WorldState,
+  maneuver: TacticalManeuverState,
+  pendingEvents: Array<{ type: string; payload: Record<string, unknown> }>,
+): boolean {
+  const coveringUnits = maneuver.coveringUnitIds
+    .map((unitId) => world.unitsById[unitId])
+    .filter((unit): unit is Unit => Boolean(unit && !isUnitInjured(unit)));
+  if (coveringUnits.length === 0) {
+    return true;
+  }
+  const firedThisTick = new Set(
+    pendingEvents
+      .filter((event) => event.type === "friendly_fire_delivered")
+      .map((event) => String(event.payload.unitId)),
+  );
+  return coveringUnits.some(
+    (unit) =>
+      firedThisTick.has(unit.id) ||
+      (typeof unit.lastFiredAt === "number" && world.time - unit.lastFiredAt <= RETREAT_FIRE_INTERVAL_SECONDS + 0.35),
+  );
+}
+
+function tacticalCasualtyHandoffEvents(
+  world: WorldState,
+  maneuver: TacticalManeuverState,
+): Array<{ type: string; payload: Record<string, unknown> }> {
+  if (maneuver.type !== "alternating_forward" && maneuver.type !== "alternating_retreat") {
+    return [];
+  }
+  const evacuation = world.casualtyEvacuation;
+  if (!evacuation || evacuation.phase !== "dragging" || !evacuation.casualtyUnitId) {
+    return [];
+  }
+  const casualty = world.unitsById[evacuation.casualtyUnitId];
+  if (!casualty) {
+    return [];
+  }
+  if (maneuver.type === "alternating_forward") {
+    return tacticalForwardCasualtyPickupEvents(world, maneuver, casualty, evacuation);
+  }
+
+  const movingCarrierIds = uniqueIds(evacuation.helperUnitIds).filter((unitId) => maneuver.movingUnitIds.includes(unitId));
+  if (movingCarrierIds.length === 0) {
+    return [];
+  }
+  const activeCarrierIds = new Set(uniqueIds(evacuation.helperUnitIds));
+  const replacementCandidates = maneuver.coveringUnitIds
+    .map((unitId) => world.unitsById[unitId])
+    .filter((unit): unit is Unit => Boolean(unit && !isUnitInjured(unit)))
+    .filter((unit) => !activeCarrierIds.has(unit.id))
+    .filter((unit) => hexDistance(unit.coord, casualty.coord) <= 2 && unit.intent.type === "idle")
+    .sort((a, b) => hexDistance(a.coord, casualty.coord) - hexDistance(b.coord, casualty.coord) || formationReceiverRank(a) - formationReceiverRank(b));
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  const replacements = [...replacementCandidates];
+
+  for (const oldCarrierId of movingCarrierIds) {
+    const newCarrier = replacements.shift();
+    if (!newCarrier) break;
+    events.push({
+      type: "casualty_carrier_relieved",
+      payload: {
+        orderId: evacuation.orderId,
+        casualtyUnitId: casualty.id,
+        oldCarrierId,
+        newCarrierId: newCarrier.id,
+        reason: "alternating_handoff",
+      },
+    });
+    events.push({
+      type: "status_report_emitted",
+      payload: {
+        sourceUnitId: newCarrier.id,
+        kind: "status",
+        message: "tar över släpning",
+        coord: newCarrier.coord,
+        confidence: "high",
+        relatedUnitId: oldCarrierId,
+      },
+    });
+  }
+
+  return events;
+}
+
+function tacticalForwardCasualtyPickupEvents(
+  world: WorldState,
+  maneuver: TacticalManeuverState,
+  casualty: Unit,
+  evacuation: CasualtyEvacuationState,
+): Array<{ type: string; payload: Record<string, unknown> }> {
+  const nextBoundIndex = (maneuver.boundIndex ?? 0) + 1;
+  const receivers = formationReceivers(world, world.units.find((unit) => unit.role === "leader")?.id ?? "")
+    .filter((unit) => !isUnitInjured(unit));
+  const nextMovingUnitIds = alternatingBoundMovingUnitIds(receivers, nextBoundIndex);
+  const nextMovingSet = new Set(nextMovingUnitIds);
+  const activeCarrierIds = uniqueIds(evacuation.helperUnitIds);
+  if (activeCarrierIds.length < 2 || activeCarrierIds.every((unitId) => nextMovingSet.has(unitId))) {
+    return [];
+  }
+
+  const replacements = nextMovingUnitIds
+    .map((unitId) => world.unitsById[unitId])
+    .filter((unit): unit is Unit => Boolean(unit && unit.id !== casualty.id && !isUnitInjured(unit)))
+    .filter((unit) => !activeCarrierIds.includes(unit.id))
+    .sort((a, b) => casualtyCarrierSortScore(a, casualty) - casualtyCarrierSortScore(b, casualty));
+  if (replacements.length < activeCarrierIds.length) {
+    return [];
+  }
+
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  const nextReplacements = [...replacements];
+  for (const oldCarrierId of activeCarrierIds) {
+    const newCarrier = nextReplacements.shift();
+    if (!newCarrier) break;
+    events.push({
+      type: "casualty_carrier_relieved",
+      payload: {
+        orderId: evacuation.orderId,
+        casualtyUnitId: casualty.id,
+        oldCarrierId,
+        newCarrierId: newCarrier.id,
+        reason: "alternating_forward_handoff",
+      },
+    });
+    events.push({
+      type: "status_report_emitted",
+      payload: {
+        sourceUnitId: newCarrier.id,
+        kind: "status",
+        message: "tar över släpning för nästa framryckning",
+        coord: newCarrier.coord,
+        confidence: "high",
+        relatedUnitId: oldCarrierId,
+      },
+    });
+  }
+  return events;
+}
+
+function collectFatigueEvents(world: WorldState, seconds: number): Array<{ type: string; payload: Record<string, unknown> }> {
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  for (const unit of world.units.filter((candidate) => candidate.side === "friendly")) {
+    if (unit.status.includes("evac_helper") && world.casualtyEvacuation?.phase === "dragging") {
+      events.push({
+        type: "stamina_changed",
+        payload: { unitId: unit.id, delta: -seconds * CASUALTY_DRAG_STAMINA_COST_PER_SECOND, reason: "casualty_drag" },
+      });
+    } else if ((unit.status.includes("retreat_moving") || unit.status.includes("forward_moving")) && unit.intent.type === "moving") {
+      events.push({
+        type: "stamina_changed",
+        payload: {
+          unitId: unit.id,
+          delta: -seconds * RETREAT_STAMINA_COST_PER_HEX,
+          reason: unit.status.includes("forward_moving") ? "alternating_forward_bound" : "retreat_bound",
+        },
+      });
+    } else if (unit.intent.type === "idle" && unit.stamina < 100 && !unit.status.includes("evac_helper")) {
+      events.push({
+        type: "stamina_changed",
+        payload: { unitId: unit.id, delta: seconds * 1.2, reason: "resting" },
+      });
+    }
+  }
+  return events;
+}
+
+function tacticalManeuverMovementStartEvents(
+  world: WorldState,
+  maneuver: TacticalManeuverState,
+  movingUnitIds: string[],
+  coveringUnitIds: string[],
+): Array<{ type: string; payload: Record<string, unknown> }> {
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  const threatDirection = maneuverThreatDirection(maneuver.type, maneuver.direction);
+  for (const unitId of coveringUnitIds) {
+    const covering = world.unitsById[unitId];
+    if (!covering || isUnitInjured(covering)) continue;
+    events.push({
+      type: "body_orientation_changed",
+      payload: {
+        unitId,
+        direction: threatDirection,
+        reason: "covering_fire",
+      },
+    });
+  }
+  const reserved = new Set(
+    world.units
+      .filter((unit) => !movingUnitIds.includes(unit.id))
+      .map((unit) => hexKey(unit.coord)),
+  );
+  const teamPlan = casualtyTeamManeuverMovementPlan(world, maneuver, movingUnitIds, reserved);
+  if (teamPlan?.blocked) {
+    return [...events, ...teamPlan.events];
+  }
+  const teamHandledUnitIds = teamPlan?.handledUnitIds ?? new Set<string>();
+  if (teamPlan) {
+    events.push(...teamPlan.events);
+    for (const coord of teamPlan.reservedCoords) {
+      reserved.add(hexKey(coord));
+    }
+  }
+  const assignments = tacticalManeuverTargetAssignments(
+    world,
+    maneuver.type,
+    movingUnitIds.filter((unitId) => !teamHandledUnitIds.has(unitId)),
+    coveringUnitIds,
+    maneuver.direction,
+    maneuver.directionVector ?? directionVectorFromHexDirection(maneuver.direction),
+    reserved,
+  );
+  for (const unitId of movingUnitIds) {
+    if (teamHandledUnitIds.has(unitId)) {
+      continue;
+    }
+    const unit = world.unitsById[unitId];
+    if (!unit || isUnitInjured(unit)) continue;
+    const assignment = assignments.get(unitId);
+    const target = assignment?.target ?? unit.coord;
+    const targetPoint = assignment?.targetPoint ?? axialToMapPoint(target);
+    if (assignment?.waitReason) {
+      events.push({
+        type: "movement_waiting",
+        payload: {
+          unitId,
+          from: unit.coord,
+          target,
+          reason: assignment.waitReason,
+        },
+      });
+      continue;
+    }
+    if (!tacticalMoveHasCover(world, unit, coveringUnitIds, threatDirection)) {
+      events.push({
+        type: "movement_waiting",
+        payload: {
+          unitId,
+          from: unit.coord,
+          target,
+          reason: maneuver.type === "alternating_forward" ? "advance_cover_missing" : "retreat_cover_missing",
+        },
+      });
+      continue;
+    }
+    const pathResult = nearestPath(world, unit.coord, target, {
+      blocked: occupiedHexes(world, unit.id),
+      allowTarget: true,
+      maxVisited: 1200,
+    });
+    events.push(
+      pathResult.path.length > 0
+        ? {
+            type: "movement_started",
+            payload: {
+              unitId,
+              target,
+              targetPoint,
+              path: pathResult.path,
+              orderId: maneuver.orderId,
+              reason: maneuver.type === "alternating_forward" ? "alternating_forward_bound" : "retreat_bound",
+            },
+          }
+        : {
+            type: "movement_waiting",
+            payload: {
+              unitId,
+              from: unit.coord,
+              target,
+              reason: maneuver.type === "alternating_forward" ? "advance_no_path" : "retreat_no_path",
+            },
+          },
+    );
+  }
+  return events;
+}
+
+type CasualtyTeamManeuverPlan = {
+  events: Array<{ type: string; payload: Record<string, unknown> }>;
+  handledUnitIds: Set<string>;
+  reservedCoords: HexCoord[];
+  blocked?: boolean;
+};
+
+type CasualtyTeamLayout = {
+  casualtySlot: HexCoord;
+  casualtySlotPoint: MapPoint;
+  carrierSlots: Record<string, HexCoord>;
+  carrierSlotPoints: Record<string, MapPoint>;
+  teamTarget: HexCoord;
+  teamTargetPoint: MapPoint;
+};
+
+function casualtyTeamManeuverMovementPlan(
+  world: WorldState,
+  maneuver: TacticalManeuverState,
+  movingUnitIds: string[],
+  reserved: Set<string>,
+): CasualtyTeamManeuverPlan | undefined {
+  const team = world.casualtyTeam ?? derivedCasualtyTeamState(world);
+  const evacuation = world.casualtyEvacuation;
+  if (!team || !evacuation || evacuation.phase !== "dragging") {
+    return undefined;
+  }
+  const casualty = world.unitsById[team.casualtyUnitId];
+  const carrierUnitIds = uniqueIds(team.carrierUnitIds);
+  const carriers = carrierUnitIds.map((unitId) => world.unitsById[unitId]).filter((unit): unit is Unit => Boolean(unit && !isUnitInjured(unit)));
+  const mode = casualtyTeamModeForManeuver(maneuver.type) ?? casualtyTeamModeForWorld(world);
+  if (!casualty || carriers.length < 2) {
+    return casualtyTeamBlockedPlan(world, team, movingUnitIds, "carrier_missing", mode);
+  }
+
+  const movingCarrierIds = carrierUnitIds.filter((unitId) => movingUnitIds.includes(unitId));
+  if (movingCarrierIds.length === 0) {
+    return undefined;
+  }
+  if (movingCarrierIds.length < carrierUnitIds.length) {
+    return casualtyTeamBlockedPlan(world, team, movingUnitIds, "carrier_missing", mode);
+  }
+
+  const layout = casualtyTeamLayoutForManeuver(world, maneuver, team, carriers, movingUnitIds, reserved);
+  if (!layout) {
+    return casualtyTeamBlockedPlan(world, team, movingUnitIds, "casualty_team_blocked", mode);
+  }
+
+  const events: CasualtyTeamManeuverPlan["events"] = [
+    {
+      type: "casualty_team_updated",
+      payload: {
+        casualtyUnitId: team.casualtyUnitId,
+        carrierUnitIds,
+        assignedElement: team.assignedElement,
+        mode,
+        teamIntent: "moving",
+        teamTarget: layout.teamTarget,
+        teamTargetPoint: layout.teamTargetPoint,
+        carrierSlots: layout.carrierSlots,
+        carrierSlotPoints: layout.carrierSlotPoints,
+        casualtySlot: layout.casualtySlot,
+        casualtySlotPoint: layout.casualtySlotPoint,
+      },
+    },
+  ];
+
+  const teamUnitIds = new Set([team.casualtyUnitId, ...carrierUnitIds]);
+  const blockedForPath = new Set(
+    world.units
+      .filter((unit) => !teamUnitIds.has(unit.id) && !movingUnitIds.includes(unit.id))
+      .map((unit) => hexKey(unit.coord)),
+  );
+  for (const carrier of carriers) {
+    const target = layout.carrierSlots[carrier.id];
+    if (!target) {
+      return casualtyTeamBlockedPlan(world, team, movingUnitIds, "carrier_missing", mode);
+    }
+    const pathResult = nearestPath(world, carrier.coord, target, {
+      blocked: blockedForPath,
+      allowTarget: true,
+      maxVisited: 1600,
+    });
+    if (pathResult.path.length === 0 && !sameCoord(carrier.coord, target)) {
+      return casualtyTeamBlockedPlan(world, team, movingUnitIds, "casualty_team_blocked", mode);
+    }
+    events.push(
+      sameCoord(carrier.coord, target)
+        ? {
+            type: "movement_completed",
+            payload: {
+              unitId: carrier.id,
+              at: target,
+              targetPoint: layout.carrierSlotPoints[carrier.id],
+              orderId: maneuver.orderId,
+              reason: "casualty_team_bound",
+            },
+          }
+        : {
+            type: "movement_started",
+            payload: {
+              unitId: carrier.id,
+              target,
+              targetPoint: layout.carrierSlotPoints[carrier.id],
+              path: pathResult.path,
+              orderId: maneuver.orderId,
+              reason: "casualty_team_bound",
+            },
+          },
+    );
+  }
+
+  return {
+    events,
+    handledUnitIds: new Set(carrierUnitIds),
+    reservedCoords: [layout.casualtySlot, ...Object.values(layout.carrierSlots)],
+  };
+}
+
+function casualtyTeamBlockedPlan(
+  world: WorldState,
+  team: CasualtyTeamState,
+  movingUnitIds: string[],
+  waitReason: CasualtyTeamWaitReason,
+  mode = casualtyTeamModeForWorld(world),
+): CasualtyTeamManeuverPlan {
+  const target = team.teamTarget ?? team.casualtySlot ?? world.unitsById[team.casualtyUnitId]?.coord ?? { q: 0, r: 0 };
+  return {
+    blocked: true,
+    handledUnitIds: new Set(movingUnitIds),
+    reservedCoords: [],
+    events: [
+      {
+        type: "casualty_team_updated",
+        payload: {
+          casualtyUnitId: team.casualtyUnitId,
+          carrierUnitIds: team.carrierUnitIds,
+          assignedElement: team.assignedElement,
+          mode,
+          teamIntent: "blocked",
+          teamTarget: target,
+          teamTargetPoint: axialToMapPoint(target),
+          carrierSlots: team.carrierSlots,
+          carrierSlotPoints: team.carrierSlotPoints,
+          casualtySlot: team.casualtySlot,
+          casualtySlotPoint: team.casualtySlotPoint,
+          waitReason,
+        },
+      },
+      ...movingUnitIds.map((unitId) => ({
+        type: "movement_waiting",
+        payload: {
+          unitId,
+          from: world.unitsById[unitId]?.coord ?? target,
+          target,
+          reason: waitReason,
+          relatedUnitId: team.casualtyUnitId,
+        },
+      })),
+    ],
+  };
+}
+
+function casualtyTeamLayoutForManeuver(
+  world: WorldState,
+  maneuver: TacticalManeuverState,
+  team: CasualtyTeamState,
+  carriers: Unit[],
+  movingUnitIds: string[],
+  reserved: Set<string>,
+): CasualtyTeamLayout | undefined {
+  const casualty = world.unitsById[team.casualtyUnitId];
+  if (!casualty || carriers.length < 2) return undefined;
+  const directionVector = normalizeVector(maneuver.directionVector ?? directionVectorFromHexDirection(maneuver.direction));
+  const lateral = rightPerpendicular(directionVector);
+  const currentCenter = averageMapPoint([casualty.position, ...carriers.map((carrier) => carrier.position)]);
+  const desiredCenter = casualtyTeamDesiredCenterForManeuver(world, maneuver, movingUnitIds, directionVector, lateral, currentCenter);
+  const desiredCoord = mapPointToHex(desiredCenter);
+  const teamUnitIds = new Set([team.casualtyUnitId, ...carriers.map((carrier) => carrier.id)]);
+  const movingIdSet = new Set(movingUnitIds);
+  const baseReserved = new Set(
+    [...reserved].filter((key) => !teamUnitIds.has(world.units.find((unit) => hexKey(unit.coord) === key)?.id ?? "")),
+  );
+  for (const unit of world.units) {
+    if (!teamUnitIds.has(unit.id) && !movingIdSet.has(unit.id)) {
+      baseReserved.add(hexKey(unit.coord));
+    }
+  }
+
+  const casualtyCandidates = coordsWithinRadius(desiredCoord, 4)
+    .filter((coord) => inBounds(world.map, coord))
+    .filter((coord) => !baseReserved.has(hexKey(coord)))
+    .filter((coord) => {
+      const tile = world.map.tilesByKey[hexKey(coord)];
+      return tile && !isImpassable(tile);
+    })
+    .sort((a, b) => mapDistanceInHexes(axialToMapPoint(a), desiredCenter) - mapDistanceInHexes(axialToMapPoint(b), desiredCenter));
+
+  for (const casualtySlot of casualtyCandidates) {
+    const casualtyPoint = axialToMapPoint(casualtySlot);
+    const firstCarrierPoint = addMapPoint(casualtyPoint, scaleVector(lateral, -HEX_CENTER_STEP));
+    const secondCarrierPoint = addMapPoint(casualtyPoint, scaleVector(lateral, HEX_CENTER_STEP));
+    const excluded = new Set([hexKey(casualtySlot)]);
+    const firstCarrierSlot = nearestCasualtyTeamSlot(world, casualtySlot, firstCarrierPoint, baseReserved, excluded);
+    if (!firstCarrierSlot) continue;
+    excluded.add(hexKey(firstCarrierSlot));
+    const secondCarrierSlot = nearestCasualtyTeamSlot(world, casualtySlot, secondCarrierPoint, baseReserved, excluded);
+    if (!secondCarrierSlot) continue;
+
+    const carrierSlots: Record<string, HexCoord> = {
+      [carriers[0].id]: firstCarrierSlot,
+      [carriers[1].id]: secondCarrierSlot,
+    };
+    const carrierSlotPoints: Record<string, MapPoint> = {
+      [carriers[0].id]: axialToMapPoint(firstCarrierSlot),
+      [carriers[1].id]: axialToMapPoint(secondCarrierSlot),
+    };
+    return {
+      casualtySlot,
+      casualtySlotPoint: casualtyPoint,
+      carrierSlots,
+      carrierSlotPoints,
+      teamTarget: casualtySlot,
+      teamTargetPoint: casualtyPoint,
+    };
+  }
+
+  return undefined;
+}
+
+function casualtyTeamDesiredCenterForManeuver(
+  world: WorldState,
+  maneuver: TacticalManeuverState,
+  movingUnitIds: string[],
+  directionVector: MapVector,
+  lateral: MapVector,
+  currentCenter: MapPoint,
+): MapPoint {
+  if (maneuver.type === "alternating_forward") {
+    const spacing = HEX_CENTER_STEP * ALTERNATING_FORWARD_SLOT_SPACING_HEXES;
+    const lineAnchor = alternatingForwardAnchorPoint(world, new Set(movingUnitIds), directionVector, lateral, spacing);
+    return addMapPoint(lineAnchor, scaleVector(directionVector, -HEX_CENTER_STEP));
+  }
+
+  return addMapPoint(currentCenter, scaleVector(directionVector, HEX_CENTER_STEP * RETREAT_BOUND_HEXES));
+}
+
+function nearestCasualtyTeamSlot(
+  world: WorldState,
+  casualtySlot: HexCoord,
+  preferredPoint: MapPoint,
+  reserved: Set<string>,
+  excluded: Set<string>,
+): HexCoord | undefined {
+  return coordsWithinRadius(casualtySlot, 2)
+    .filter((coord) => inBounds(world.map, coord))
+    .filter((coord) => !reserved.has(hexKey(coord)) && !excluded.has(hexKey(coord)))
+    .filter((coord) => hexDistance(coord, casualtySlot) >= 1 && hexDistance(coord, casualtySlot) <= 2)
+    .filter((coord) => {
+      const tile = world.map.tilesByKey[hexKey(coord)];
+      return tile && !isImpassable(tile);
+    })
+    .sort((a, b) => mapDistanceInHexes(axialToMapPoint(a), preferredPoint) - mapDistanceInHexes(axialToMapPoint(b), preferredPoint))[0];
+}
+
+function nearestVisibleOpposingUnit(world: WorldState, sourceUnitIds: string[]): Unit | undefined {
+  const sources = sourceUnitIds.map((unitId) => world.unitsById[unitId]).filter(Boolean);
+  return world.units
+    .filter((unit) => unit.side === "opposing" && !isUnitInjured(unit))
+    .map((opposing) => ({
+      opposing,
+      distance: Math.min(...sources.map((source) => mapDistanceInHexes(source.position, opposing.position))),
+      visible: sources.some((source) => canSee(world, source, opposing)),
+    }))
+    .filter((candidate) => candidate.visible)
+    .sort((a, b) => a.distance - b.distance)[0]?.opposing;
+}
+
 function collectCasualtyEvacuationEvents(world: WorldState): Array<{ type: string; payload: Record<string, unknown> }> {
   const evacuation = world.casualtyEvacuation;
-  if (!evacuation || !evacuation.orderId || !evacuation.casualtyUnitId || !evacuation.collectionPoint || evacuation.phase === "completed") {
+  if (!evacuation || !evacuation.orderId || !evacuation.casualtyUnitId || evacuation.phase === "completed") {
     return [];
   }
 
   const casualty = world.unitsById[evacuation.casualtyUnitId];
-  const helpers = evacuation.helperUnitIds.map((unitId) => world.unitsById[unitId]).filter(Boolean);
+  const allHelpers = uniqueIds(evacuation.helperUnitIds).map((unitId) => world.unitsById[unitId]).filter(Boolean);
+  const unavailableReliefEvents = casualty && allHelpers.length > 0
+    ? casualtyUnavailableCarrierReliefEvents(world, evacuation, casualty, allHelpers)
+    : [];
+  if (unavailableReliefEvents.length > 0) {
+    return unavailableReliefEvents;
+  }
+  const helpers = allHelpers.filter((unit) => !isUnitInjured(unit));
   if (!casualty || helpers.length < 2) {
     return [];
   }
@@ -2848,9 +4768,10 @@ function collectCasualtyEvacuationEvents(world: WorldState): Array<{ type: strin
       return [];
     }
 
-    const casualtyTarget = nearestPassableCasualtyTarget(world, evacuation.collectionPoint, new Set([casualty.id, ...helpers.map((helper) => helper.id)]));
-    const helperTargets = helperEscortTargets(world, evacuation.collectionPoint, helpers, casualtyTarget);
+    const casualtyTarget = draggedCasualtyFollowCoord(world, casualty, helpers) ?? casualty.coord;
+    const helperTargets = helperEscortTargets(world, casualty.coord, helpers, casualtyTarget);
     const collectionPointId = selectedCasualtyCollectionPointId(evacuation, undefined);
+    const mode = casualtyTeamModeForWorld(world);
     const events: Array<{ type: string; payload: Record<string, unknown> }> = [
       {
         type: "casualty_drag_started",
@@ -2858,10 +4779,19 @@ function collectCasualtyEvacuationEvents(world: WorldState): Array<{ type: strin
           orderId: evacuation.orderId,
           casualtyUnitId: casualty.id,
           helperUnitIds: helpers.map((helper) => helper.id),
+          carrierUnitIds: helpers.map((helper) => helper.id),
           collectionPointId,
-          label: casualtyCollectionPointLabel(collectionPointId),
+          label: undefined,
           collectionPoint: evacuation.collectionPoint,
           casualtyTarget,
+          mode,
+          teamIntent: "holding",
+          teamTarget: casualtyTarget,
+          teamTargetPoint: axialToMapPoint(casualtyTarget),
+          carrierSlots: Object.fromEntries([...helperTargets.entries()]),
+          carrierSlotPoints: Object.fromEntries([...helperTargets.entries()].map(([unitId, coord]) => [unitId, axialToMapPoint(coord)])),
+          casualtySlot: casualtyTarget,
+          casualtySlotPoint: axialToMapPoint(casualtyTarget),
         },
       },
       {
@@ -2869,7 +4799,7 @@ function collectCasualtyEvacuationEvents(world: WorldState): Array<{ type: strin
         payload: {
           sourceUnitId: helpers[0].id,
           kind: "status",
-          message: `${casualty.name} släpas mot ${casualtyCollectionPointLabel(collectionPointId)}`,
+          message: `${casualty.name} bärs med gruppen`,
           coord: helpers[0].coord,
           confidence: "high",
           relatedUnitId: casualty.id,
@@ -2877,49 +4807,203 @@ function collectCasualtyEvacuationEvents(world: WorldState): Array<{ type: strin
       },
     ];
 
-    events.push(...movementEventsForCasualtyUnit(world, casualty, casualtyTarget, evacuation.orderId, "casualty_drag"));
     for (const helper of helpers) {
       const helperTarget = helperTargets.get(helper.id) ?? helper.coord;
+      if (sameCoord(helper.coord, helperTarget)) {
+        continue;
+      }
       events.push(...movementEventsForCasualtyUnit(world, helper, helperTarget, evacuation.orderId, "casualty_helper_drag"));
     }
     return events;
   }
 
   if (evacuation.phase === "dragging") {
-    const casualtyArrived = hexDistance(casualty.coord, evacuation.collectionPoint) <= 1;
-    const helpersArrived = helpers.every((helper) => hexDistance(helper.coord, evacuation.collectionPoint) <= 2);
-    if (!casualtyArrived || !helpersArrived) {
+    const reinforcementEvents = casualtyReinforcementEvents(world, evacuation, casualty, helpers);
+    if (reinforcementEvents.length > 0) {
+      return reinforcementEvents;
+    }
+
+    if (world.activeManeuver?.type === "alternating_forward" && world.activeManeuver.phase !== "completed") {
       return [];
     }
 
-    const collectionPointId = selectedCasualtyCollectionPointId(evacuation, undefined);
+    return [];
+  }
+
+  return [];
+}
+
+function casualtyReinforcementEvents(
+  world: WorldState,
+  evacuation: CasualtyEvacuationState,
+  casualty: Unit,
+  helpers: Unit[],
+): Array<{ type: string; payload: Record<string, unknown> }> {
+  const tiredCarrier = helpers
+    .filter((helper) => helper.stamina <= CASUALTY_REINFORCEMENT_STAMINA_THRESHOLD)
+    .sort((a, b) => a.stamina - b.stamina)[0];
+  if (!tiredCarrier) {
+    return [];
+  }
+
+  const requested = evacuation.requestedReinforcement;
+  if (requested?.unitId) {
+    const reinforcement = world.unitsById[requested.unitId];
+    if (!reinforcement) {
+      return [];
+    }
+    if (unitBusyWithActiveManeuver(world, reinforcement)) {
+      return [];
+    }
+    if (hexDistance(reinforcement.coord, casualty.coord) <= 1 && reinforcement.intent.type === "idle") {
+      return [
+        {
+          type: "casualty_carrier_relieved",
+          payload: {
+            orderId: evacuation.orderId,
+            casualtyUnitId: casualty.id,
+            oldCarrierId: tiredCarrier.id,
+            newCarrierId: reinforcement.id,
+            reason: "carrier_tired",
+          },
+        },
+        {
+          type: "status_report_emitted",
+          payload: {
+            sourceUnitId: reinforcement.id,
+            kind: "status",
+            message: `avlöser ${tiredCarrier.name}`,
+            coord: reinforcement.coord,
+            confidence: "high",
+            relatedUnitId: tiredCarrier.id,
+          },
+        },
+      ];
+    }
+    if (reinforcement.intent.type === "idle") {
+      const target = nearestAvailableCoordAround(
+        world,
+        casualty.coord,
+        reinforcement.coord,
+        new Set(world.units.filter((unit) => unit.id !== reinforcement.id).map((unit) => hexKey(unit.coord))),
+        1,
+      );
+      return movementEventsForCasualtyUnit(world, reinforcement, target, evacuation.orderId ?? "", "casualty_reinforcement");
+    }
+    return [];
+  }
+
+  const helperIds = new Set([casualty.id, ...helpers.map((helper) => helper.id)]);
+  const availableReinforcements = world.units
+    .filter((unit) => unit.side === "friendly" && !helperIds.has(unit.id) && !isUnitInjured(unit))
+    .filter((unit) => !unitBusyWithActiveManeuver(world, unit));
+  const nonCommandAvailable = availableReinforcements.filter((unit) => unit.role !== "leader" && unit.role !== "deputy_leader");
+  const reinforcementCandidates = (nonCommandAvailable.length > 0 ? nonCommandAvailable : availableReinforcements)
+    .filter((unit) => unit.stamina > CASUALTY_REINFORCEMENT_STAMINA_THRESHOLD);
+  const reinforcement = reinforcementCandidates.sort((a, b) => casualtyCarrierSortScore(a, casualty) - casualtyCarrierSortScore(b, casualty))[0];
+  if (!reinforcement) {
+    return [];
+  }
+  const target = nearestAvailableCoordAround(
+    world,
+    casualty.coord,
+    reinforcement.coord,
+    new Set(world.units.filter((unit) => unit.id !== reinforcement.id).map((unit) => hexKey(unit.coord))),
+    1,
+  );
+  const requestEvents: Array<{ type: string; payload: Record<string, unknown> }> = [
+    {
+      type: "casualty_reinforcement_requested",
+      payload: {
+        orderId: evacuation.orderId,
+        casualtyUnitId: casualty.id,
+        forUnitId: tiredCarrier.id,
+        unitId: reinforcement.id,
+        requestedAt: world.time,
+      },
+    },
+    {
+      type: "status_report_emitted",
+      payload: {
+        sourceUnitId: tiredCarrier.id,
+        kind: "status",
+        message: "förstärkning",
+        coord: tiredCarrier.coord,
+        confidence: "high",
+        relatedUnitId: reinforcement.id,
+      },
+    },
+  ];
+  if (hexDistance(reinforcement.coord, casualty.coord) <= 1 && reinforcement.intent.type === "idle") {
     return [
+      ...requestEvents,
       {
-        type: "casualty_evacuation_completed",
+        type: "casualty_carrier_relieved",
         payload: {
           orderId: evacuation.orderId,
           casualtyUnitId: casualty.id,
-          helperUnitIds: helpers.map((helper) => helper.id),
-          collectionPointId,
-          label: casualtyCollectionPointLabel(collectionPointId),
-          collectionPoint: evacuation.collectionPoint,
-        },
-      },
-      {
-        type: "status_report_emitted",
-        payload: {
-          sourceUnitId: helpers[0].id,
-          kind: "status",
-          message: `${casualty.name} vid ${casualtyCollectionPointLabel(collectionPointId)}`,
-          coord: casualty.coord,
-          confidence: "high",
-          relatedUnitId: casualty.id,
+          oldCarrierId: tiredCarrier.id,
+          newCarrierId: reinforcement.id,
+          reason: "carrier_tired",
         },
       },
     ];
   }
+  return [...requestEvents, ...movementEventsForCasualtyUnit(world, reinforcement, target, evacuation.orderId ?? "", "casualty_reinforcement")];
+}
 
-  return [];
+function casualtyUnavailableCarrierReliefEvents(
+  world: WorldState,
+  evacuation: CasualtyEvacuationState,
+  casualty: Unit,
+  helpers: Unit[],
+): Array<{ type: string; payload: Record<string, unknown> }> {
+  const unavailable = helpers.find((helper) => isUnitInjured(helper));
+  if (!unavailable) {
+    return [];
+  }
+  const activeIds = new Set([casualty.id, ...evacuation.helperUnitIds]);
+  const replacement = world.units
+    .filter((unit) => unit.side === "friendly" && !activeIds.has(unit.id) && !isUnitInjured(unit))
+    .filter((unit) => !unitBusyWithActiveManeuver(world, unit))
+    .sort((a, b) => casualtyCarrierSortScore(a, casualty) - casualtyCarrierSortScore(b, casualty))[0];
+  if (!replacement) {
+    return [];
+  }
+  const reserved = new Set(world.units.filter((unit) => unit.id !== replacement.id).map((unit) => hexKey(unit.coord)));
+  const target = nearestAvailableCoordAround(world, casualty.coord, replacement.coord, reserved, 1);
+  return [
+    {
+      type: "casualty_carrier_relieved",
+      payload: {
+        orderId: evacuation.orderId,
+        casualtyUnitId: casualty.id,
+        oldCarrierId: unavailable.id,
+        newCarrierId: replacement.id,
+        reason: "carrier_unavailable",
+      },
+    },
+    {
+      type: "status_report_emitted",
+      payload: {
+        sourceUnitId: replacement.id,
+        kind: "status",
+        message: `avlöser ${unavailable.name}`,
+        coord: replacement.coord,
+        confidence: "high",
+        relatedUnitId: unavailable.id,
+      },
+    },
+    ...movementEventsForCasualtyUnit(world, replacement, target, evacuation.orderId ?? "", "casualty_reinforcement"),
+  ];
+}
+
+function unitBusyWithActiveManeuver(world: WorldState, unit: Unit): boolean {
+  const maneuver = world.activeManeuver;
+  if (!maneuver || maneuver.phase === "completed") {
+    return false;
+  }
+  return maneuver.movingUnitIds.includes(unit.id) || maneuver.coveringUnitIds.includes(unit.id);
 }
 
 function movementEventsForCasualtyUnit(
@@ -2947,7 +5031,7 @@ function movementEventsForCasualtyUnit(
     return [
       {
         type: "movement_blocked",
-        payload: { unitId: unit.id, from: unit.coord, target, reason: "no_path_to_casualty_collection" },
+        payload: { unitId: unit.id, from: unit.coord, target, reason: "no_path_to_casualty" },
       },
     ];
   }
@@ -2957,6 +5041,82 @@ function movementEventsForCasualtyUnit(
       payload: { unitId: unit.id, target, targetPoint: axialToMapPoint(target), path: pathResult.path, orderId, reason },
     },
   ];
+}
+
+function syncDraggedCasualtyWithCarriers(world: WorldState, movedUnitId: string): void {
+  const evacuation = world.casualtyEvacuation;
+  const helperUnitIds = evacuation ? uniqueIds(evacuation.helperUnitIds) : [];
+  if (!evacuation || evacuation.phase !== "dragging" || !evacuation.casualtyUnitId || !helperUnitIds.includes(movedUnitId)) {
+    return;
+  }
+  const casualty = maybeMutableUnit(world, evacuation.casualtyUnitId);
+  const helpers = helperUnitIds
+    .map((unitId) => world.unitsById[unitId])
+    .filter((unit): unit is Unit => Boolean(unit && !isUnitInjured(unit)));
+  if (!casualty || helpers.length < 2) {
+    return;
+  }
+  updateCasualtyTeamState(world);
+  const followCoord = draggedCasualtyFollowCoord(world, casualty, helpers);
+  if (!followCoord) {
+    casualty.intent = { type: "idle" };
+    updateCasualtyTeamState(world, { teamIntent: "blocked", waitReason: "spacing_blocked" });
+    return;
+  }
+  const followPoint = draggedCasualtyFollowPoint(followCoord, helpers);
+  updateCasualtyTeamState(world, {
+    casualtySlot: followCoord,
+    casualtySlotPoint: followPoint,
+  });
+  casualty.coord = followCoord;
+  casualty.position = followPoint;
+  casualty.facing = helpers[0]?.facing ?? casualty.facing;
+  casualty.lookDirection = casualty.facing;
+  casualty.intent = { type: "idle" };
+  casualty.status = Array.from(new Set([...casualty.status.filter((status) => status !== "evac_pending"), "being_dragged"]));
+}
+
+function draggedCasualtyFollowPoint(followCoord: HexCoord, helpers: Unit[]): MapPoint {
+  const hexCenter = axialToMapPoint(followCoord);
+  const carrierAverage = averageMapPoint(helpers.map((helper) => helper.position));
+  return {
+    x: hexCenter.x * 0.35 + carrierAverage.x * 0.65,
+    y: hexCenter.y * 0.35 + carrierAverage.y * 0.65,
+  };
+}
+
+function draggedCasualtyFollowCoord(
+  world: WorldState,
+  casualty: Unit,
+  helpers: Unit[],
+  preferredTarget?: HexCoord,
+): HexCoord | undefined {
+  const anchor = mapPointToHex(averageMapPoint(helpers.map((helper) => helper.position)));
+  const reserved = new Set(
+    world.units
+      .filter((unit) => unit.id !== casualty.id)
+      .map((unit) => hexKey(unit.coord)),
+  );
+  const helperKeys = new Set(helpers.map((helper) => hexKey(helper.coord)));
+  return coordsWithinRadius(anchor, 2)
+    .filter((coord) => inBounds(world.map, coord))
+    .filter((coord) => !reserved.has(hexKey(coord)))
+    .filter((coord) => !helperKeys.has(hexKey(coord)))
+    .filter((coord) => helpers.every((helper) => hexDistance(coord, helper.coord) <= 2))
+    .filter((coord) => {
+      const tile = world.map.tilesByKey[hexKey(coord)];
+      return tile && !isImpassable(tile);
+    })
+    .sort((a, b) => {
+      const maxDistanceA = Math.max(...helpers.map((helper) => hexDistance(a, helper.coord)));
+      const maxDistanceB = Math.max(...helpers.map((helper) => hexDistance(b, helper.coord)));
+      return (
+        maxDistanceA - maxDistanceB ||
+        (preferredTarget ? hexDistance(a, preferredTarget) - hexDistance(b, preferredTarget) : 0) ||
+        hexDistance(a, anchor) - hexDistance(b, anchor) ||
+        hexDistance(a, casualty.coord) - hexDistance(b, casualty.coord)
+      );
+    })[0];
 }
 
 function collectForwardFormationPhaseEvents(world: WorldState): Array<{ type: string; payload: Record<string, unknown> }> {
@@ -2976,7 +5136,7 @@ function collectForwardFormationPhaseEvents(world: WorldState): Array<{ type: st
     return [];
   }
 
-  const receivers = formationReceivers(world, leader.id);
+  const receivers = commandableFormationReceivers(world, leader.id);
   if (!formationIsReadyToAdvance(world, activeFormation, receivers)) {
     return [];
   }
@@ -3012,7 +5172,7 @@ function collectEmbodiedLeaderFormationEvents(world: WorldState): Array<{ type: 
     return [];
   }
 
-  const receivers = formationReceivers(world, leader.id).filter((unit) => unit.currentOrderId === activeFormation.orderId);
+  const receivers = commandableFormationReceivers(world, leader.id).filter((unit) => unit.currentOrderId === activeFormation.orderId);
   const leaderFormationPoint = leader.intent.type === "moving" ? leader.intent.targetPoint : leader.position;
   const assignments = formationAssignments(
     world,
@@ -3124,6 +5284,7 @@ function collectMotivatedFormationMovementEvents(
       (unit): unit is Unit & { intent: Extract<UnitIntent, { type: "moving" }> } =>
         unit.side === "friendly" &&
         unit.role !== "leader" &&
+        !isUnitInjured(unit) &&
         unit.currentOrderId === activeFormation.orderId &&
         unit.intent.type === "moving" &&
         unit.intent.path.length > 0,
@@ -3178,6 +5339,7 @@ function collectMotivatedFormationMovementEvents(
     if (progress < 1) {
       const nextPosition = moveMapPointToward(unit.position, unit.intent.targetPoint, seconds * movementRate(unit) * HEX_CENTER_STEP);
       const laggingNeighbour = firstLaggingNeighbourFromPosition(
+        world,
         unit,
         nextPosition,
         neighboursByUnit.get(unit.id) ?? [],
@@ -3361,6 +5523,7 @@ function chooseMotivatedFormationStep(
     })
     .filter(() => {
       return !firstLaggingNeighbourFromPosition(
+        world,
         unit,
         nextPosition,
         neighbours,
@@ -3398,6 +5561,7 @@ function chooseMotivatedFormationStep(
 }
 
 function firstLaggingNeighbourFromPosition(
+  world: WorldState,
   unit: Unit,
   position: MapPoint,
   neighbours: Unit[],
@@ -3409,7 +5573,7 @@ function firstLaggingNeighbourFromPosition(
   for (const neighbour of neighbours) {
     const neighbourPosition = simulatedPositions.get(neighbour.id) ?? plannedPositions.get(neighbour.id) ?? neighbour.position;
     const leadHexes = forwardLeadInHexes(position, neighbourPosition, direction);
-    if (leadHexes > forwardLeadLimit(activeFormation, unit, neighbour)) {
+    if (leadHexes > forwardLeadLimit(world, activeFormation, unit, neighbour)) {
       return { neighbour, leadHexes: round(leadHexes) };
     }
   }
@@ -3453,7 +5617,7 @@ function formationMotivationScore(
     const neighbourPosition = simulatedPositions.get(neighbour.id) ?? plannedPositions.get(neighbour.id) ?? neighbour.position;
     const distance = hexDistance(candidate, neighbourCoord);
     const lead = candidateProgress - forwardProgress(neighbourPosition, activeFormation.directionVector ?? activeFormation.direction);
-    const leadLimit = forwardLeadLimit(activeFormation, unit, neighbour) * HEX_CENTER_STEP;
+    const leadLimit = forwardLeadLimit(world, activeFormation, unit, neighbour) * HEX_CENTER_STEP;
     score += Math.max(0, distance - 2) * FORMATION_NEIGHBOUR_WEIGHT;
     score += Math.max(0, lead - leadLimit) * FORMATION_NEIGHBOUR_WEIGHT * 2;
     if (distance === 1) {
@@ -3533,7 +5697,7 @@ function collectCohesionStops(world: WorldState): Map<string, { neighbourId: str
     if (
       !stops.has(unit.id) &&
       unit.intent.type === "moving" &&
-      isTooFarAhead(unit, neighbour, activeFormation.directionVector ?? activeFormation.direction, forwardLeadLimit(activeFormation, unit, neighbour))
+      isTooFarAhead(unit, neighbour, activeFormation.directionVector ?? activeFormation.direction, forwardLeadLimit(world, activeFormation, unit, neighbour))
     ) {
       stops.set(unit.id, {
         neighbourId: neighbour.id,
@@ -3544,7 +5708,7 @@ function collectCohesionStops(world: WorldState): Map<string, { neighbourId: str
     if (
       !stops.has(neighbour.id) &&
       neighbour.intent.type === "moving" &&
-      isTooFarAhead(neighbour, unit, activeFormation.directionVector ?? activeFormation.direction, forwardLeadLimit(activeFormation, neighbour, unit))
+      isTooFarAhead(neighbour, unit, activeFormation.directionVector ?? activeFormation.direction, forwardLeadLimit(world, activeFormation, neighbour, unit))
     ) {
       stops.set(neighbour.id, {
         neighbourId: unit.id,
@@ -3558,24 +5722,24 @@ function collectCohesionStops(world: WorldState): Map<string, { neighbourId: str
 }
 
 function cohesionPairs(world: WorldState, leaderId: string): Array<[Unit, Unit]> {
-  const receivers = formationReceivers(world, leaderId);
+  const receivers = commandableFormationReceivers(world, leaderId);
   if (world.activeFormation?.formation === "file") {
     const pairs: Array<[Unit, Unit]> = [];
-    appendChainPairs(pairs, receivers);
+    appendChainPairs(pairs, fileFormationOrderUnits(world, receivers));
     return pairs;
   }
 
   const leader = receivers.find((unit) => unit.role === "leader");
   const deputy = receivers.find((unit) => unit.role === "deputy_leader");
-  const tatOne = receivers.filter((unit) => unit.element === "tat_1");
-  const tatTwo = receivers.filter((unit) => unit.element === "tat_2");
+  const tatOne = orderedElementUnits(receivers, "tat_1");
+  const tatTwo = orderedElementUnits(receivers, "tat_2");
   const pairs: Array<[Unit, Unit]> = [];
 
   if (leader && deputy) {
     pairs.push([leader, deputy]);
   }
-  appendChainPairs(pairs, leader ? [leader, ...tatOne] : tatOne);
-  appendChainPairs(pairs, deputy ? [deputy, ...tatTwo] : tatTwo);
+  appendChainPairs(pairs, tatOne);
+  appendChainPairs(pairs, tatTwo);
 
   return pairs;
 }
@@ -3607,23 +5771,277 @@ function forwardLeadInHexes(a: MapPoint, b: MapPoint, direction: Direction | Map
   return (forwardProgress(a, direction) - forwardProgress(b, direction)) / HEX_CENTER_STEP;
 }
 
-function forwardLeadLimit(activeFormation: FormationState, unit: Unit, neighbour: Unit): number {
-  return COHESION_MAX_FORWARD_LEAD + expectedForwardLeadBetween(activeFormation, unit, neighbour);
+function forwardLeadLimit(world: WorldState, activeFormation: FormationState, unit: Unit, neighbour: Unit): number {
+  return COHESION_MAX_FORWARD_LEAD + expectedForwardLeadBetween(world, activeFormation, unit, neighbour);
 }
 
-function expectedForwardLeadBetween(activeFormation: FormationState, unit: Unit, neighbour: Unit): number {
+function expectedForwardLeadBetween(world: WorldState, activeFormation: FormationState, unit: Unit, neighbour: Unit): number {
   if (activeFormation.formation !== "file") {
     return 0;
   }
-  return Math.max(0, formationFileOrderIndex(neighbour) - formationFileOrderIndex(unit)) * FORMATION_FILE_SPACING_HEXES;
+  return Math.max(0, formationFileOrderIndex(world, neighbour) - formationFileOrderIndex(world, unit)) * FORMATION_FILE_SPACING_HEXES;
 }
 
-function formationFileOrderIndex(unit: Unit): number {
+function formationFileOrderIndex(world: WorldState, unit: Unit): number {
+  if (world.activeFormation?.formation === "file") {
+    const leader = world.units.find((candidate) => candidate.side === "friendly" && candidate.role === "leader");
+    const ordered = fileFormationOrderUnits(world, commandableFormationReceivers(world, leader?.id ?? unit.id));
+    const index = ordered.findIndex((candidate) => candidate.id === unit.id);
+    if (index >= 0) {
+      return index;
+    }
+  }
   if (unit.role === "leader") return 0;
   if (unit.role === "deputy_leader") return 1;
   if (unit.element === "tat_1") return 1 + (unit.elementPosition ?? 1);
   if (unit.element === "tat_2") return 4 + (unit.elementPosition ?? 1);
   return formationReceiverRank(unit);
+}
+
+function alternatingBoundMovingUnitIds(units: Unit[], boundIndex: number): string[] {
+  const moving = boundIndex % 2 === 0
+    ? orderedElementUnits(units, "tat_1")
+    : orderedElementUnits(units, "tat_2");
+  return moving
+    .filter((unit) => !isUnitInjured(unit))
+    .sort((a, b) => formationReceiverRank(a) - formationReceiverRank(b))
+    .map((unit) => unit.id);
+}
+
+function orderedElementUnits(units: Unit[], element: "tat_1" | "tat_2"): Unit[] {
+  return units
+    .filter((unit) => unit.element === element)
+    .sort((a, b) => formationReceiverRank(a) - formationReceiverRank(b));
+}
+
+function maneuverThreatDirection(type: TacticalManeuverType, direction: Direction): Direction {
+  return type === "alternating_forward" ? direction : rotateDirection(direction, 3);
+}
+
+function zipperRetreatOrder(units: Unit[], directionVector: MapVector, side: ZipperSide): Unit[] {
+  const threatVector = scaleVector(normalizeVector(directionVector), -1);
+  const lateral = side === "left" ? leftPerpendicular(threatVector) : rightPerpendicular(threatVector);
+  return [...units]
+    .filter((unit) => !isUnitInjured(unit))
+    .sort(
+      (a, b) =>
+        dotMapPoint(b.position, lateral) - dotMapPoint(a.position, lateral) ||
+        formationReceiverRank(a) - formationReceiverRank(b),
+    );
+}
+
+function zipperRetreatMovingUnitIds(units: Unit[], directionVector: MapVector, side: ZipperSide, stepIndex: number): string[] {
+  const ordered = zipperRetreatOrder(units, directionVector, side);
+  const preferred = ordered.filter((unit) => unit.role !== "leader" && unit.role !== "deputy_leader");
+  const command = ordered.filter((unit) => unit.role === "leader" || unit.role === "deputy_leader");
+  const sequence = [...preferred, ...command];
+  if (stepIndex >= sequence.length) {
+    return [];
+  }
+  const unit = sequence[stepIndex];
+  return unit ? [unit.id] : [];
+}
+
+type TacticalTargetAssignment = {
+  target: HexCoord;
+  targetPoint: MapPoint;
+  waitReason?: string;
+};
+
+function tacticalManeuverTargetAssignments(
+  world: WorldState,
+  type: TacticalManeuverType,
+  movingUnitIds: string[],
+  coveringUnitIds: string[],
+  direction: Direction,
+  directionVector: MapVector,
+  reserved: Set<string>,
+): Map<string, TacticalTargetAssignment> {
+  if (type === "alternating_forward") {
+    return alternatingForwardTargetAssignments(world, movingUnitIds, coveringUnitIds, directionVector, reserved);
+  }
+
+  const assignments = new Map<string, TacticalTargetAssignment>();
+  for (const unitId of movingUnitIds) {
+    const unit = world.unitsById[unitId];
+    if (!unit || isUnitInjured(unit)) continue;
+    const target = retreatTargetForUnit(world, unit, direction, reserved);
+    reserved.add(hexKey(target));
+    assignments.set(unit.id, { target, targetPoint: axialToMapPoint(target) });
+  }
+  return assignments;
+}
+
+function alternatingForwardTargetAssignments(
+  world: WorldState,
+  movingUnitIds: string[],
+  coveringUnitIds: string[],
+  directionVector: MapVector,
+  reserved: Set<string>,
+): Map<string, TacticalTargetAssignment> {
+  const movingIdSet = new Set(movingUnitIds);
+  const assignedTargets: HexCoord[] = [];
+  const assignments = new Map<string, TacticalTargetAssignment>();
+  const forward = normalizeVector(directionVector);
+  const right = rightPerpendicular(forward);
+  const spacing = HEX_CENTER_STEP * ALTERNATING_FORWARD_SLOT_SPACING_HEXES;
+  const anchor = alternatingForwardAnchorPoint(world, movingIdSet, forward, right, spacing);
+  const orderedMovingUnits = movingUnitIds
+    .map((unitId) => world.unitsById[unitId])
+    .filter((unit): unit is Unit => Boolean(unit && !isUnitInjured(unit)))
+    .sort((a, b) => formationReceiverRank(a) - formationReceiverRank(b));
+
+  for (const unit of orderedMovingUnits) {
+    const slotPoint = alternatingForwardSlotPoint(unit, anchor, right, spacing);
+    const assignment = nearestAlternatingForwardTarget(
+      world,
+      unit,
+      slotPoint,
+      coveringUnitIds,
+      directionVector,
+      reserved,
+      assignedTargets,
+    );
+    reserved.add(hexKey(assignment.target));
+    assignedTargets.push(assignment.target);
+    assignments.set(unit.id, assignment);
+  }
+
+  return assignments;
+}
+
+function alternatingForwardAnchorPoint(
+  world: WorldState,
+  movingUnitIds: Set<string>,
+  forward: MapVector,
+  right: MapVector,
+  spacing: number,
+): MapPoint {
+  const leader = world.units.find((unit) => unit.side === "friendly" && unit.role === "leader");
+  const deputy = world.units.find((unit) => unit.side === "friendly" && unit.role === "deputy_leader");
+  const boundVector = scaleVector(forward, HEX_CENTER_STEP * ALTERNATING_FORWARD_BOUND_HEXES);
+
+  if (leader && movingUnitIds.has(leader.id)) {
+    return addMapPoint(leader.position, boundVector);
+  }
+  if (leader) {
+    return clone(leader.position);
+  }
+  if (deputy && movingUnitIds.has(deputy.id)) {
+    return addMapPoint(addMapPoint(deputy.position, boundVector), scaleVector(right, -spacing));
+  }
+  const movingUnits = Array.from(movingUnitIds)
+    .map((unitId) => world.unitsById[unitId])
+    .filter((unit): unit is Unit => Boolean(unit));
+  return addMapPoint(averageMapPoint(movingUnits.map((unit) => unit.position)), boundVector);
+}
+
+function alternatingForwardSlotPoint(unit: Unit, anchor: MapPoint, right: MapVector, spacing: number): MapPoint {
+  return addMapPoint(anchor, scaleVector(right, formationLateralSlot(unit) * spacing));
+}
+
+function nearestAlternatingForwardTarget(
+  world: WorldState,
+  unit: Unit,
+  slotPoint: MapPoint,
+  coveringUnitIds: string[],
+  directionVector: MapVector,
+  reserved: Set<string>,
+  assignedTargets: HexCoord[],
+): TacticalTargetAssignment {
+  const desired = mapPointToHex(slotPoint);
+  const candidates = coordsWithinRadius(desired, 5)
+    .filter((coord) => inBounds(world.map, coord))
+    .filter((coord) => !reserved.has(hexKey(coord)))
+    .filter((coord) => {
+      const tile = world.map.tilesByKey[hexKey(coord)];
+      return tile && !isImpassable(tile);
+    })
+    .map((coord) => ({
+      coord,
+      blockRisk: coveringEffectBlockRisk(world, coord, coveringUnitIds, directionVector),
+      spacingRisk: alternatingForwardSpacingRisk(coord, assignedTargets),
+      distance: mapDistanceInHexes(axialToMapPoint(coord), slotPoint),
+      terrainCost: world.map.tilesByKey[hexKey(coord)]?.moveCost ?? 1,
+    }))
+    .sort(
+      (a, b) =>
+        a.blockRisk - b.blockRisk ||
+        a.spacingRisk - b.spacingRisk ||
+        a.distance - b.distance ||
+        a.terrainCost - b.terrainCost,
+    );
+
+  const safe = candidates.find((candidate) => candidate.blockRisk === 0 && candidate.spacingRisk === 0);
+  const nonBlocking = candidates.find((candidate) => candidate.blockRisk === 0);
+  const selected = safe ?? nonBlocking;
+  if (!selected) {
+    return {
+      target: clone(unit.coord),
+      targetPoint: clone(unit.position),
+      waitReason: "effect_zone_block_risk",
+    };
+  }
+
+  return {
+    target: selected.coord,
+    targetPoint: sameCoord(mapPointToHex(slotPoint), selected.coord) ? slotPoint : axialToMapPoint(selected.coord),
+  };
+}
+
+function alternatingForwardSpacingRisk(candidate: HexCoord, assignedTargets: HexCoord[]): number {
+  const assignedSpacingRisk = assignedTargets.reduce((risk, target) => risk + (hexDistance(candidate, target) <= 1 ? 1 : 0), 0);
+  return assignedSpacingRisk;
+}
+
+function coveringEffectBlockRisk(world: WorldState, candidate: HexCoord, coveringUnitIds: string[], directionVector: MapVector): number {
+  const candidatePoint = axialToMapPoint(candidate);
+  const forward = normalizeVector(directionVector);
+  const lateral = rightPerpendicular(forward);
+  let risk = 0;
+
+  for (const unitId of coveringUnitIds) {
+    const covering = world.unitsById[unitId];
+    if (!covering || isUnitInjured(covering)) continue;
+    const delta = subtractMapPoint(candidatePoint, covering.position);
+    const forwardHexes = dotMapPoint(delta, forward) / HEX_CENTER_STEP;
+    const lateralHexes = Math.abs(dotMapPoint(delta, lateral)) / HEX_CENTER_STEP;
+    if (forwardHexes <= ALTERNATING_FORWARD_BOUND_HEXES + 0.25 || forwardHexes > EFFECT_ZONE_RANGE_HEXES) continue;
+    if (lateralHexes > 0.75) continue;
+    if (!hasLineOfSight(world, covering.coord, candidate)) continue;
+    risk += forwardHexes <= 4 ? 2 : 1;
+  }
+
+  return risk;
+}
+
+function retreatTargetForUnit(world: WorldState, unit: Unit, direction: Direction, reserved: Set<string>): HexCoord {
+  const desired = coordInDirection(unit.coord, direction, RETREAT_BOUND_HEXES);
+  const tile = world.map.tilesByKey[hexKey(desired)];
+  if (inBounds(world.map, desired) && tile && !isImpassable(tile) && !reserved.has(hexKey(desired))) {
+    return desired;
+  }
+  return nearestAvailableCoordAround(world, desired, unit.coord, reserved, 2);
+}
+
+function tacticalMoveHasCover(world: WorldState, unit: Unit, coveringUnitIds: string[], threatDirection: Direction): boolean {
+  const tile = world.map.tilesByKey[hexKey(unit.coord)];
+  if ((tile?.cover ?? 0) >= 1 || (tile?.exposure ?? 0) <= 1) {
+    return true;
+  }
+  if (coveringUnitIds.some((unitId) => {
+    const covering = world.unitsById[unitId];
+    return covering && !isUnitInjured(covering) && covering.intent.type !== "moving";
+  })) {
+    return true;
+  }
+  return coveringUnitIds
+    .map((unitId) => world.unitsById[unitId])
+    .some((covering) => covering && !isUnitInjured(covering) && directionDelta(covering.lookDirection, threatDirection) <= 1);
+}
+
+function dotMapPoint(a: MapPoint, b: MapPoint): number {
+  return a.x * b.x + a.y * b.y;
 }
 
 function forwardProgress(coordOrPoint: HexCoord | MapPoint, direction: Direction | MapVector): number {
@@ -4155,6 +6573,42 @@ function collectObjectiveEvents(session: Session): Array<{ type: string; payload
       : [];
   }
 
+  if (world.scenario.id === "casualty_retreat") {
+    const primaryCasualty = friendlies.find((unit) => isUnitInjured(unit) && unit.status.includes("primary_casualty"));
+    const casualtyId = primaryCasualty?.id ?? world.casualtyEvacuation?.casualtyUnitId ?? friendlies.find((unit) => isUnitInjured(unit))?.id;
+    const casualty = casualtyId ? world.unitsById[casualtyId] : undefined;
+    const target = world.casualtyEvacuation?.collectionPoint ?? world.objective.target;
+    const casualtyArrived = casualty ? hexDistance(casualty.coord, target) <= 1 : false;
+    const leader = effectiveFriendlies.find((unit) => unit.role === "leader");
+    const deputy = effectiveFriendlies.find((unit) => unit.role === "deputy_leader");
+    const commandPairArrived =
+      Boolean(leader && hexDistance(leader.coord, target) <= OBJECTIVE_GROUP_RADIUS_HEXES) &&
+      Boolean(deputy && hexDistance(deputy.coord, target) <= OBJECTIVE_GROUP_RADIUS_HEXES);
+    const arrived = effectiveFriendlies.filter((unit) => hexDistance(unit.coord, target) <= OBJECTIVE_GROUP_RADIUS_HEXES);
+    const required = Math.max(1, Math.ceil(effectiveFriendlies.length * OBJECTIVE_GROUP_REQUIRED_RATIO));
+    if (!casualtyArrived || !commandPairArrived || arrived.length < required) {
+      return [];
+    }
+    return [
+      {
+        type: "objective_succeeded",
+        payload: {
+          objectiveId: world.objective.id,
+          reason: "casualty_reached_asa",
+          target,
+          casualtyUnitId: casualty?.id,
+          radiusHexes: OBJECTIVE_GROUP_RADIUS_HEXES,
+          arrived: arrived.length,
+          required,
+          effectiveFriendlies: effectiveFriendlies.length,
+          injured: friendlies.length - effectiveFriendlies.length,
+          leaderId: leader?.id,
+          deputyId: deputy?.id,
+        },
+      },
+    ];
+  }
+
   const radius = world.scenario.id === "risk_zone_blocking" ? 2 : OBJECTIVE_GROUP_RADIUS_HEXES;
   const arrived = effectiveFriendlies.filter((unit) => hexDistance(unit.coord, world.objective.target) <= radius);
   const leader = effectiveFriendlies.find((unit) => unit.role === "leader") ?? effectiveFriendlies[0];
@@ -4191,12 +6645,14 @@ function collectOpposingUnitEvents(
   const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
   const world = session.world;
   const friendlyUnits = world.units.filter((unit) => unit.side === "friendly");
-  const opposingUnits = world.units.filter((unit) => unit.side === "opposing");
+  const opposingUnits = world.units.filter((unit) => unit.side === "opposing" && !isUnitInjured(unit));
+  const woundedTargetIdsThisTick = new Set<string>();
 
   for (const observer of opposingUnits) {
     events.push({ type: "opposing_unit_scanned", payload: { unitId: observer.id, direction: observer.lookDirection } });
     const target = friendlyUnits
       .filter((unit) => !isUnitInjured(unit))
+      .filter((unit) => !woundedTargetIdsThisTick.has(unit.id))
       .filter((unit) => canSee(world, observer, unit))
       .sort((a, b) => contactTargetScore(world, observer, b) - contactTargetScore(world, observer, a))[0];
     if (!target) {
@@ -4226,7 +6682,7 @@ function collectOpposingUnitEvents(
       hasRecentEvent(
         session,
         "contact_pressure_emitted",
-        FIRE_RESOLUTION_WINDOW_SECONDS,
+        opposingFireIntervalSeconds(observer),
         (event) => event.payload.unitId === observer.id,
       )
     ) {
@@ -4238,16 +6694,6 @@ function collectOpposingUnitEvents(
       payload: { unitId: observer.id, targetId: target.id, kind: "direct_fire" },
     });
 
-    if (
-      hasPriorEvent(
-        session,
-        "unit_wounded",
-        (event) => event.payload.byUnitId === observer.id,
-      )
-    ) {
-      continue;
-    }
-
     const casualtyRisk = fireCasualtyProbability(world, observer, target);
     const casualtyRoll = random();
     events.push({
@@ -4257,9 +6703,11 @@ function collectOpposingUnitEvents(
         targetId: target.id,
         probability: round(casualtyRisk),
         roll: round(casualtyRoll),
+        suppression: round(observer.suppression ?? 0),
       },
     });
     if (casualtyRoll <= casualtyRisk) {
+      woundedTargetIdsThisTick.add(target.id);
       events.push({
         type: "unit_wounded",
         payload: {
@@ -4287,6 +6735,191 @@ function collectOpposingUnitEvents(
   return events;
 }
 
+function collectFriendlyContactReactionEvents(
+  world: WorldState,
+  contactEvents: Array<{ type: string; payload: Record<string, unknown> }>,
+  random: () => number,
+): Array<{ type: string; payload: Record<string, unknown> }> {
+  const activeOpposingUnitIds = new Set<string>();
+  for (const event of contactEvents) {
+    if (event.type === "contact_pressure_emitted" || event.type === "incoming_fire_resolved") {
+      activeOpposingUnitIds.add(String(event.payload.unitId));
+    }
+    if (event.type === "unit_wounded" && typeof event.payload.byUnitId === "string") {
+      activeOpposingUnitIds.add(event.payload.byUnitId);
+    }
+  }
+  if (activeOpposingUnitIds.size === 0) {
+    return [];
+  }
+
+  const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
+  const neutralizedTargetIds = new Set<string>();
+  for (const unit of world.units.filter((candidate) => candidate.side === "friendly" && !isUnitInjured(candidate))) {
+    const tile = world.map.tilesByKey[hexKey(unit.coord)];
+    if (unit.posture === "standing" || unit.posture === "moving") {
+      events.push({
+        type: "posture_changed",
+        payload: {
+          unitId: unit.id,
+          posture: "crouched",
+          reason: "contact_reaction",
+          terrain: tile?.terrain,
+          cover: tile?.cover ?? 0,
+          concealment: tile?.concealment ?? 0,
+          exposure: tile?.exposure ?? 0,
+        },
+      });
+    }
+
+    if (unit.fireCooldown > 0) {
+      continue;
+    }
+    const target = reactiveFireTargetForUnit(world, unit, activeOpposingUnitIds, neutralizedTargetIds);
+    if (!target) {
+      continue;
+    }
+    const direction = directionBetween(unit.coord, target.coord) ?? unit.facing;
+    if (unit.facing !== direction || unit.lookDirection !== direction) {
+      events.push({
+        type: "body_orientation_changed",
+        payload: {
+          unitId: unit.id,
+          direction,
+          reason: "contact_reaction",
+          targetId: target.id,
+        },
+      });
+    }
+    const result = friendlyFireResolutionEvents(world, unit, target, direction, random, {
+      deliveredReason: "contact_reaction",
+      effectReason: "return_fire",
+    });
+    events.push(...result.events);
+    if (result.hit) {
+      neutralizedTargetIds.add(target.id);
+    }
+  }
+
+  return events;
+}
+
+function friendlyFireResolutionEvents(
+  world: WorldState,
+  unit: Unit,
+  target: Unit,
+  direction: Direction,
+  random: () => number,
+  options: { deliveredReason: string; effectReason: string; maneuverOrderId?: string },
+): { events: PendingDomainEvent[]; hit: boolean } {
+  const suppressionAmount = friendlySuppressionAmountForTarget(world, target);
+  const hitProbability = friendlyFireCasualtyProbability(world, unit, target, suppressionAmount);
+  const hitRoll = random();
+  const events: PendingDomainEvent[] = [
+    {
+      type: "friendly_fire_delivered",
+      payload: {
+        unitId: unit.id,
+        targetId: target.id,
+        direction,
+        reason: options.deliveredReason,
+        maneuverOrderId: options.maneuverOrderId,
+      },
+    },
+    {
+      type: "suppression_applied",
+      payload: {
+        unitId: target.id,
+        byUnitId: unit.id,
+        amount: suppressionAmount,
+        reason: options.effectReason,
+      },
+    },
+    {
+      type: "friendly_fire_resolved",
+      payload: {
+        unitId: unit.id,
+        targetId: target.id,
+        probability: round(hitProbability),
+        roll: round(hitRoll),
+        suppression: round(clamp((target.suppression ?? 0) + suppressionAmount, 0, 1)),
+        reason: options.effectReason,
+      },
+    },
+  ];
+  const hit = hitRoll <= hitProbability;
+  if (hit) {
+    events.push({
+      type: "unit_wounded",
+      payload: {
+        unitId: target.id,
+        byUnitId: unit.id,
+        health: 0,
+        reason: options.effectReason,
+        probability: round(hitProbability),
+      },
+    });
+  }
+
+  return { events, hit };
+}
+
+function reactiveFireTargetForUnit(
+  world: WorldState,
+  unit: Unit,
+  activeOpposingUnitIds: Set<string>,
+  excludedTargetIds: Set<string> = new Set(),
+): Unit | undefined {
+  return Array.from(activeOpposingUnitIds)
+    .map((unitId) => world.unitsById[unitId])
+    .filter(
+      (candidate): candidate is Unit =>
+        Boolean(candidate) && candidate.side === "opposing" && !isUnitInjured(candidate) && !excludedTargetIds.has(candidate.id),
+    )
+    .map((target) => ({
+      target,
+      distance: mapDistanceInHexes(unit.position, target.position),
+    }))
+    .filter((candidate) => candidate.distance <= 10)
+    .filter((candidate) => canAcquireReactiveFireTarget(world, unit, candidate.target, candidate.distance))
+    .sort((a, b) => a.distance - b.distance)[0]?.target;
+}
+
+function canAcquireReactiveFireTarget(world: WorldState, unit: Unit, target: Unit, distance: number): boolean {
+  if (!canSee(world, unit, target)) {
+    return false;
+  }
+  const protection = targetProtectionScore(world, target);
+  if (protection < 3) {
+    return true;
+  }
+  const isAssignedCoveringFire =
+    unit.status.includes("covering_fire") || Boolean(world.activeManeuver?.coveringUnitIds.includes(unit.id));
+  return isAssignedCoveringFire || distance <= 3.5;
+}
+
+function friendlySuppressionAmountForTarget(world: WorldState, target: Unit): number {
+  const protection = targetProtectionScore(world, target);
+  return clamp(FRIENDLY_FIRE_SUPPRESSION - protection * 0.045, 0.12, FRIENDLY_FIRE_SUPPRESSION);
+}
+
+function friendlyFireCasualtyProbability(world: WorldState, unit: Unit, target: Unit, suppressionAmount: number): number {
+  const distance = mapDistanceInHexes(unit.position, target.position);
+  const protection = targetProtectionScore(world, target);
+  const range = distance <= 3.5 ? 0.18 : distance <= 6 ? 0.08 : -0.04;
+  const coveringFireBonus =
+    unit.status.includes("covering_fire") || Boolean(world.activeManeuver?.coveringUnitIds.includes(unit.id)) ? 0.08 : 0;
+  const suppressionBonus = clamp((target.suppression ?? 0) + suppressionAmount, 0, 1) * 0.24;
+  return clamp(0.18 + range + coveringFireBonus + suppressionBonus - protection * 0.07, 0.02, FRIENDLY_FIRE_MAX_CASUALTY_PROBABILITY);
+}
+
+function targetProtectionScore(world: WorldState, target: Unit): number {
+  const tile = world.map.tilesByKey[hexKey(target.coord)];
+  const postureProtection = target.posture === "prone" ? 2 : target.posture === "crouched" ? 1 : 0;
+  const preparedProtection = target.status.includes("prepared_position") ? 1 : 0;
+  return (tile?.cover ?? 0) + (tile?.concealment ?? 0) + postureProtection + preparedProtection;
+}
+
 function isUnitInjured(unit: Unit): boolean {
   return unit.posture === "injured" || unit.health <= 0 || unit.status.includes("injured");
 }
@@ -4304,7 +6937,12 @@ function fireCasualtyProbability(world: WorldState, observer: Unit, target: Unit
   const terrain = (tile?.exposure ?? 1) * 0.1 - (tile?.cover ?? 0) * 0.12 - (tile?.concealment ?? 0) * 0.08;
   const range = distance <= 8 ? 0.12 : distance <= 16 ? 0.04 : -0.05;
   const alertBonus = observer.alerted ? 0.06 : 0;
-  return clamp(0.08 + posture + terrain + range + alertBonus, 0.02, 0.65);
+  const suppressionPenalty = (observer.suppression ?? 0) * SUPPRESSION_CASUALTY_RISK_REDUCTION;
+  return clamp(0.08 + posture + terrain + range + alertBonus - suppressionPenalty, 0.01, 0.65);
+}
+
+function opposingFireIntervalSeconds(observer: Unit): number {
+  return FIRE_RESOLUTION_WINDOW_SECONDS * (1 + (observer.suppression ?? 0) * SUPPRESSED_FIRE_INTERVAL_MULTIPLIER);
 }
 
 function formationReceivers(world: WorldState, leaderId: string): Unit[] {
@@ -4312,6 +6950,10 @@ function formationReceivers(world: WorldState, leaderId: string): Unit[] {
   return friendlies
     .filter((unit) => unit.id === leaderId || unit.role !== "leader")
     .sort((a, b) => formationReceiverRank(a) - formationReceiverRank(b) || a.id.localeCompare(b.id));
+}
+
+function commandableFormationReceivers(world: WorldState, leaderId: string): Unit[] {
+  return formationReceivers(world, leaderId).filter((unit) => !isUnitInjured(unit));
 }
 
 function formationReceiverRank(unit: Unit): number {
@@ -4322,6 +6964,8 @@ function formationReceiverRank(unit: Unit): number {
   return 30;
 }
 
+type FormationAssignment = { unit: Unit; target: HexCoord; targetPoint: MapPoint };
+
 function formationAssignments(
   world: WorldState,
   receivers: Unit[],
@@ -4329,14 +6973,21 @@ function formationAssignments(
   targetPoint: MapPoint,
   direction: Direction,
   directionVector: MapVector = directionVectorFromHexDirection(direction),
-): Array<{ unit: Unit; target: HexCoord; targetPoint: MapPoint }> {
-  const offsets = formationOffsets(formation, direction, receivers, directionVector);
+): FormationAssignment[] {
   const receiverIds = new Set(receivers.map((unit) => unit.id));
   const reserved = new Set(
     world.units
       .filter((unit) => !receiverIds.has(unit.id))
       .map((unit) => hexKey(unit.coord)),
   );
+  if (formation === "file") {
+    const casualtyBlockAssignments = fileFormationAssignmentsWithCasualtyBlock(world, receivers, targetPoint, directionVector, reserved);
+    if (casualtyBlockAssignments) {
+      return casualtyBlockAssignments;
+    }
+  }
+
+  const offsets = formationOffsets(formation, direction, receivers, directionVector);
   return receivers.map((unit) => {
     const assignedTargetPoint = addMapPoint(targetPoint, offsets.get(unit.id) ?? { x: 0, y: 0 });
     const assignedTarget = nearestPassableFormationTarget(world, mapPointToHex(assignedTargetPoint), (coord) => {
@@ -4346,6 +6997,139 @@ function formationAssignments(
     reserved.add(hexKey(assignedTarget));
     return { unit, target: assignedTarget, targetPoint: assignedTargetPoint };
   });
+}
+
+function fileFormationAssignmentsWithCasualtyBlock(
+  world: WorldState,
+  receivers: Unit[],
+  targetPoint: MapPoint,
+  directionVector: MapVector,
+  reserved: Set<string>,
+): FormationAssignment[] | undefined {
+  const block = activeFormationCasualtyBlock(world, receivers);
+  if (!block) {
+    return undefined;
+  }
+
+  const rankedReceivers = fileFormationOrderUnits(world, receivers);
+  const carrierIds = new Set(block.carriers.map((carrier) => carrier.id));
+  const commandLead = rankedReceivers.filter((unit) => !carrierIds.has(unit.id) && (unit.role === "leader" || unit.role === "deputy_leader"));
+  const tail = rankedReceivers.filter((unit) => !carrierIds.has(unit.id) && unit.role !== "leader" && unit.role !== "deputy_leader");
+  const teamUnitIds = new Set([block.casualty.id, ...carrierIds]);
+  const occupantByCoord = new Map(world.units.map((unit) => [hexKey(unit.coord), unit.id]));
+  const localReserved = new Set(
+    [...reserved].filter((key) => !teamUnitIds.has(occupantByCoord.get(key) ?? "")),
+  );
+  const assignments: FormationAssignment[] = [];
+  const backVector = scaleVector(normalizeVector(directionVector), -HEX_CENTER_STEP * FORMATION_FILE_SPACING_HEXES);
+  const slotPoint = (index: number) => addMapPoint(targetPoint, scaleVector(backVector, index));
+  const assignNormalSlot = (unit: Unit, index: number): void => {
+    const point = slotPoint(index);
+    const target = nearestPassableFormationTarget(world, mapPointToHex(point), (coord) => !localReserved.has(hexKey(coord)));
+    localReserved.add(hexKey(target));
+    assignments.push({ unit, target, targetPoint: axialToMapPoint(target) });
+  };
+
+  let slotIndex = 0;
+  for (const unit of commandLead) {
+    assignNormalSlot(unit, slotIndex);
+    slotIndex += 1;
+  }
+
+  const casualtySlotPoint = slotPoint(slotIndex);
+  const casualtySlot = nearestPassableFormationTarget(world, mapPointToHex(casualtySlotPoint), (coord) => !localReserved.has(hexKey(coord)));
+  localReserved.add(hexKey(casualtySlot));
+  const lateral = rightPerpendicular(directionVector);
+  const casualtyCenter = axialToMapPoint(casualtySlot);
+  const excluded = new Set([hexKey(casualtySlot)]);
+  const firstCarrierSlot = nearestCasualtyTeamSlot(
+    world,
+    casualtySlot,
+    addMapPoint(casualtyCenter, scaleVector(lateral, -HEX_CENTER_STEP)),
+    localReserved,
+    excluded,
+  );
+  if (!firstCarrierSlot) {
+    return undefined;
+  }
+  localReserved.add(hexKey(firstCarrierSlot));
+  excluded.add(hexKey(firstCarrierSlot));
+  const secondCarrierSlot = nearestCasualtyTeamSlot(
+    world,
+    casualtySlot,
+    addMapPoint(casualtyCenter, scaleVector(lateral, HEX_CENTER_STEP)),
+    localReserved,
+    excluded,
+  );
+  if (!secondCarrierSlot) {
+    return undefined;
+  }
+  localReserved.add(hexKey(secondCarrierSlot));
+  assignments.push(
+    { unit: block.carriers[0], target: firstCarrierSlot, targetPoint: axialToMapPoint(firstCarrierSlot) },
+    { unit: block.carriers[1], target: secondCarrierSlot, targetPoint: axialToMapPoint(secondCarrierSlot) },
+  );
+  slotIndex += 1;
+
+  for (const unit of tail) {
+    assignNormalSlot(unit, slotIndex);
+    slotIndex += 1;
+  }
+
+  return assignments;
+}
+
+function activeFormationCasualtyBlock(
+  world: WorldState,
+  receivers: Unit[],
+): { casualty: Unit; carriers: [Unit, Unit] } | undefined {
+  const evacuation = world.casualtyEvacuation;
+  const team = world.casualtyTeam ?? derivedCasualtyTeamState(world);
+  if (!evacuation || evacuation.phase !== "dragging" || !team) {
+    return undefined;
+  }
+  const casualty = world.unitsById[team.casualtyUnitId];
+  if (!casualty || !casualty.status.includes("being_dragged")) {
+    return undefined;
+  }
+  const receiverIds = new Set(receivers.map((unit) => unit.id));
+  const carriers = uniqueIds(team.carrierUnitIds)
+    .map((unitId) => world.unitsById[unitId])
+    .filter((unit): unit is Unit => Boolean(unit && receiverIds.has(unit.id) && !isUnitInjured(unit)));
+  return carriers.length >= 2 ? { casualty, carriers: [carriers[0], carriers[1]] } : undefined;
+}
+
+function fileFormationTargetPointForCasualtyBlock(
+  world: WorldState,
+  receivers: Unit[],
+  targetPoint: MapPoint,
+  directionVector: MapVector,
+): MapPoint {
+  const block = activeFormationCasualtyBlock(world, receivers);
+  if (!block) {
+    return targetPoint;
+  }
+  const ordered = fileFormationOrderUnits(world, receivers);
+  const carrierIds = new Set(block.carriers.map((carrier) => carrier.id));
+  const blockSlotIndex = ordered.findIndex((unit) => carrierIds.has(unit.id));
+  if (blockSlotIndex < 0) {
+    return targetPoint;
+  }
+  const backVector = scaleVector(normalizeVector(directionVector), -HEX_CENTER_STEP * FORMATION_FILE_SPACING_HEXES);
+  const currentCasualtyPoint = world.casualtyTeam?.casualtySlotPoint ?? block.casualty.position;
+  return addMapPoint(currentCasualtyPoint, scaleVector(backVector, -blockSlotIndex));
+}
+
+function fileFormationOrderUnits(world: WorldState, receivers: Unit[]): Unit[] {
+  const rankedReceivers = [...receivers].sort((a, b) => formationReceiverRank(a) - formationReceiverRank(b) || a.id.localeCompare(b.id));
+  const block = activeFormationCasualtyBlock(world, rankedReceivers);
+  if (!block) {
+    return rankedReceivers;
+  }
+  const carrierIds = new Set(block.carriers.map((carrier) => carrier.id));
+  const commandLead = rankedReceivers.filter((unit) => !carrierIds.has(unit.id) && (unit.role === "leader" || unit.role === "deputy_leader"));
+  const tail = rankedReceivers.filter((unit) => !carrierIds.has(unit.id) && unit.role !== "leader" && unit.role !== "deputy_leader");
+  return [...commandLead, ...block.carriers, ...tail];
 }
 
 function formationOffsets(formation: Formation, direction: Direction, receivers: Unit[], directionVector: MapVector): Map<string, MapVector> {
@@ -4438,21 +7222,24 @@ function formationOffsets(formation: Formation, direction: Direction, receivers:
 
 function lineOffsetForUnit(unit: Unit, directionVector: MapVector): MapVector {
   const right = rightPerpendicular(directionVector);
-  const left = { x: -right.x, y: -right.y };
   const spacing = HEX_CENTER_STEP * FORMATION_LINE_SPACING_HEXES;
+  return scaleVector(right, formationLateralSlot(unit) * spacing);
+}
+
+function formationLateralSlot(unit: Unit): number {
   if (unit.role === "leader") {
-    return { x: 0, y: 0 };
+    return 0;
   }
   if (unit.role === "deputy_leader") {
-    return scaleVector(right, spacing);
+    return 1;
   }
   if (unit.element === "tat_1") {
-    return scaleVector(left, Math.max(1, unit.elementPosition ?? 1) * spacing);
+    return -Math.max(1, (unit.elementPosition ?? 2) - 1);
   }
   if (unit.element === "tat_2") {
-    return scaleVector(right, Math.max(2, (unit.elementPosition ?? 1) + 1) * spacing);
+    return Math.max(2, unit.elementPosition ?? 2);
   }
-  return scaleVector(left, spacing);
+  return -1;
 }
 
 function perpendicularLineOffset(direction: Direction, side: "left" | "right", distance: number): HexCoord {
@@ -4766,18 +7553,49 @@ function nearestWoundedFriendly(world: WorldState, from: HexCoord): Unit | undef
     .sort((a, b) => hexDistance(a.coord, from) - hexDistance(b.coord, from))[0];
 }
 
+function casualtyForEvacuation(
+  world: WorldState,
+  from: HexCoord,
+  requestedUnitId?: string,
+): Unit | undefined {
+  const wounded = world.units.filter((unit) => unit.side === "friendly" && isUnitInjured(unit));
+  const activeCasualty =
+    world.casualtyEvacuation?.phase !== "completed" && world.casualtyEvacuation?.casualtyUnitId
+      ? world.unitsById[world.casualtyEvacuation.casualtyUnitId]
+      : undefined;
+  if (activeCasualty && isUnitInjured(activeCasualty)) {
+    return activeCasualty;
+  }
+
+  const primaryCasualty = wounded.find((unit) => unit.status.includes("primary_casualty"));
+  if (primaryCasualty) {
+    return primaryCasualty;
+  }
+
+  const requestedCasualty = requestedUnitId ? world.unitsById[requestedUnitId] : undefined;
+  if (requestedCasualty && requestedCasualty.side === "friendly" && isUnitInjured(requestedCasualty)) {
+    return requestedCasualty;
+  }
+
+  return wounded
+    .sort((a, b) => hexDistance(a.coord, from) - hexDistance(b.coord, from))[0] ?? nearestWoundedFriendly(world, from);
+}
+
+function uniqueIds(ids: string[]): string[] {
+  return Array.from(new Set(ids.filter(Boolean)));
+}
+
 function casualtyHelpers(world: WorldState, casualty: Unit, leaderId: string): Unit[] {
   const candidates = world.units
     .filter((unit) => unit.side === "friendly" && unit.id !== casualty.id && !isUnitInjured(unit))
-    .sort((a, b) => {
-      const leaderPenaltyA = a.id === leaderId ? 12 : 0;
-      const leaderPenaltyB = b.id === leaderId ? 12 : 0;
-      return (
-        leaderPenaltyA + hexDistance(a.coord, casualty.coord) + formationReceiverRank(a) * 0.01 -
-        (leaderPenaltyB + hexDistance(b.coord, casualty.coord) + formationReceiverRank(b) * 0.01)
-      );
-    });
+    .sort((a, b) => casualtyCarrierSortScore(a, casualty, leaderId) - casualtyCarrierSortScore(b, casualty, leaderId));
   return candidates.slice(0, 2);
+}
+
+function casualtyCarrierSortScore(unit: Unit, casualty: Unit, leaderId?: string): number {
+  const commandPenalty = unit.role === "leader" || unit.role === "deputy_leader" ? 1000 : 0;
+  const issuerPenalty = leaderId && unit.id === leaderId ? 100 : 0;
+  return commandPenalty + issuerPenalty + hexDistance(unit.coord, casualty.coord) + formationReceiverRank(unit) * 0.01;
 }
 
 function casualtyHelperAssignments(world: WorldState, casualty: Unit, helpers: Unit[]): Array<{ unit: Unit; target: HexCoord; targetPoint: MapPoint }> {
@@ -4800,13 +7618,201 @@ function helperEscortTargets(world: WorldState, collectionPoint: HexCoord, helpe
   return targets;
 }
 
-function nearestPassableCasualtyTarget(world: WorldState, collectionPoint: HexCoord, movingUnitIds: Set<string>): HexCoord {
-  const occupied = new Set(world.units.filter((unit) => !movingUnitIds.has(unit.id)).map((unit) => hexKey(unit.coord)));
-  const tile = world.map.tilesByKey[hexKey(collectionPoint)];
-  if (inBounds(world.map, collectionPoint) && tile && !occupied.has(hexKey(collectionPoint)) && !isImpassable(tile)) {
-    return collectionPoint;
+function updateCasualtyTeamState(world: WorldState, patch: Partial<CasualtyTeamState> = {}): void {
+  const evacuation = world.casualtyEvacuation;
+  if (!evacuation || evacuation.phase === "completed" || !evacuation.casualtyUnitId) {
+    world.casualtyTeam = undefined;
+    return;
   }
-  return nearestAvailableCoordAround(world, collectionPoint, collectionPoint, occupied, 2);
+
+  const casualty = maybeMutableUnit(world, evacuation.casualtyUnitId);
+  if (!casualty) {
+    world.casualtyTeam = undefined;
+    return;
+  }
+
+  const carrierUnitIds = uniqueIds(patch.carrierUnitIds ?? evacuation.carrierUnitIds ?? evacuation.helperUnitIds)
+    .filter((unitId) => Boolean(world.unitsById[unitId] && !isUnitInjured(world.unitsById[unitId])));
+  if (carrierUnitIds.length < 2) {
+    world.casualtyTeam = {
+      casualtyUnitId: casualty.id,
+      carrierUnitIds,
+      assignedElement: casualty.element,
+      mode: patch.mode ?? casualtyTeamModeForWorld(world),
+      teamIntent: "blocked",
+      carrierSlots: {},
+      carrierSlotPoints: {},
+      casualtySlot: clone(casualty.coord),
+      casualtySlotPoint: clone(casualty.position),
+      waitReason: "carrier_missing",
+      updatedAt: world.time,
+    };
+    return;
+  }
+
+  const carriers = carrierUnitIds.map((unitId) => world.unitsById[unitId]).filter((unit): unit is Unit => Boolean(unit));
+  const mode = patch.mode ?? casualtyTeamModeForWorld(world);
+  const carrierSlots = patch.carrierSlots ?? Object.fromEntries(carriers.map((carrier) => [carrier.id, clone(carrier.coord)]));
+  const carrierSlotPoints = patch.carrierSlotPoints ?? Object.fromEntries(carriers.map((carrier) => [carrier.id, clone(carrier.position)]));
+  const casualtySlot = patch.casualtySlot ?? draggedCasualtyFollowCoord(world, casualty, carriers) ?? casualty.coord;
+  const casualtySlotPoint = patch.casualtySlotPoint ?? draggedCasualtyFollowPoint(casualtySlot, carriers);
+  const carrierElements = new Set(carriers.map((carrier) => carrier.element).filter(Boolean));
+  const sharedCarrierElement = carrierElements.size === 1 ? carriers[0].element : undefined;
+  const assignedElement =
+    patch.assignedElement ??
+    tacticalTeamElement(sharedCarrierElement) ??
+    tacticalTeamElement(casualty.element) ??
+    sharedCarrierElement;
+  const derivedIntent = casualtyTeamIntentForWorld(world, carrierUnitIds);
+  const teamIntent = patch.teamIntent ?? derivedIntent.teamIntent;
+  const waitReason =
+    patch.waitReason ??
+    derivedIntent.waitReason ??
+    casualtyTeamBoundWaitReason(world, assignedElement, teamIntent);
+
+  world.casualtyTeam = {
+    casualtyUnitId: casualty.id,
+    carrierUnitIds,
+    assignedElement,
+    mode,
+    teamIntent,
+    teamTarget: patch.teamTarget ?? casualtySlot,
+    teamTargetPoint: patch.teamTargetPoint ?? casualtySlotPoint,
+    carrierSlots,
+    carrierSlotPoints,
+    casualtySlot,
+    casualtySlotPoint,
+    waitReason,
+    updatedAt: world.time,
+  };
+}
+
+function derivedCasualtyTeamState(world: WorldState): CasualtyTeamState | undefined {
+  const evacuation = world.casualtyEvacuation;
+  if (!evacuation || evacuation.phase === "completed" || !evacuation.casualtyUnitId) {
+    return undefined;
+  }
+  const casualty = world.unitsById[evacuation.casualtyUnitId];
+  if (!casualty) {
+    return undefined;
+  }
+  const carrierUnitIds = uniqueIds(evacuation.carrierUnitIds ?? evacuation.helperUnitIds)
+    .filter((unitId) => Boolean(world.unitsById[unitId] && !isUnitInjured(world.unitsById[unitId])));
+  const carriers = carrierUnitIds.map((unitId) => world.unitsById[unitId]).filter((unit): unit is Unit => Boolean(unit));
+  const mode = casualtyTeamModeForWorld(world);
+  const intent = casualtyTeamIntentForWorld(world, carrierUnitIds);
+  const casualtySlot = carriers.length >= 2
+    ? draggedCasualtyFollowCoord(world, casualty, carriers) ?? casualty.coord
+    : casualty.coord;
+  const casualtySlotPoint = carriers.length >= 2 ? draggedCasualtyFollowPoint(casualtySlot, carriers) : casualty.position;
+  return {
+    casualtyUnitId: casualty.id,
+    carrierUnitIds,
+    assignedElement: casualty.element,
+    mode,
+    teamIntent: carrierUnitIds.length >= 2 ? intent.teamIntent : "blocked",
+    teamTarget: casualtySlot,
+    teamTargetPoint: casualtySlotPoint,
+    carrierSlots: Object.fromEntries(carriers.map((carrier) => [carrier.id, clone(carrier.coord)])),
+    carrierSlotPoints: Object.fromEntries(carriers.map((carrier) => [carrier.id, clone(carrier.position)])),
+    casualtySlot,
+    casualtySlotPoint,
+    waitReason: carrierUnitIds.length >= 2 ? intent.waitReason : "carrier_missing",
+    updatedAt: world.time,
+  };
+}
+
+function casualtyTeamModeForWorld(world: WorldState): CasualtyTeamMode {
+  const maneuver = world.activeManeuver;
+  if (maneuver && maneuver.phase !== "completed") {
+    const maneuverMode = casualtyTeamModeForManeuver(maneuver.type);
+    if (maneuverMode) return maneuverMode;
+  }
+  return "handoff";
+}
+
+function casualtyTeamModeForManeuver(type: TacticalManeuverType): CasualtyTeamMode | undefined {
+  if (type === "alternating_forward") {
+    return "advancing_with_group";
+  }
+  if (type === "alternating_retreat" || type === "zipper_retreat") {
+    return "retreating_with_group";
+  }
+  if (type === "casualty_recovery") {
+    return "handoff";
+  }
+  return undefined;
+}
+
+function tacticalTeamElement(element: GroupElement | undefined): GroupElement | undefined {
+  return element === "tat_1" || element === "tat_2" ? element : undefined;
+}
+
+function casualtyTeamBoundWaitReason(
+  world: WorldState,
+  assignedElement: GroupElement | undefined,
+  teamIntent: CasualtyTeamIntent,
+): CasualtyTeamWaitReason | undefined {
+  const maneuver = world.activeManeuver;
+  if (
+    teamIntent !== "holding" ||
+    !maneuver ||
+    (maneuver.type !== "alternating_forward" && maneuver.type !== "alternating_retreat") ||
+    maneuver.phase === "completed"
+  ) {
+    return undefined;
+  }
+  const teamElement = tacticalTeamElement(assignedElement);
+  if (!teamElement) {
+    return undefined;
+  }
+  return alternatingBoundElement(maneuver.boundIndex ?? 0) === teamElement ? undefined : "covering_bound";
+}
+
+function casualtyTeamIntentForWorld(
+  world: WorldState,
+  carrierUnitIds: string[],
+): { teamIntent: CasualtyTeamIntent; waitReason?: CasualtyTeamWaitReason } {
+  const maneuver = world.activeManeuver;
+  if (maneuver && maneuver.phase !== "completed") {
+    if (carrierUnitIds.some((unitId) => maneuver.movingUnitIds.includes(unitId))) {
+      return { teamIntent: "moving" };
+    }
+    if (carrierUnitIds.some((unitId) => maneuver.coveringUnitIds.includes(unitId))) {
+      return { teamIntent: "holding", waitReason: "covering_bound" };
+    }
+  }
+  if (carrierUnitIds.some((unitId) => world.unitsById[unitId]?.intent.type === "moving")) {
+    return { teamIntent: "moving" };
+  }
+  return { teamIntent: "holding" };
+}
+
+function syncCasualtyTeamCarriedUnit(world: WorldState): void {
+  const team = world.casualtyTeam;
+  if (!team) return;
+  const casualty = maybeMutableUnit(world, team.casualtyUnitId);
+  const carriers = team.carrierUnitIds
+    .map((unitId) => world.unitsById[unitId])
+    .filter((unit): unit is Unit => Boolean(unit && !isUnitInjured(unit)));
+  if (!casualty || carriers.length < 2) return;
+  const casualtySlot = draggedCasualtyFollowCoord(world, casualty, carriers, team.teamTarget);
+  if (!casualtySlot) return;
+  const casualtySlotPoint = draggedCasualtyFollowPoint(casualtySlot, carriers);
+  world.casualtyTeam = {
+    ...team,
+    carrierSlots: Object.fromEntries(carriers.map((carrier) => [carrier.id, clone(carrier.coord)])),
+    carrierSlotPoints: Object.fromEntries(carriers.map((carrier) => [carrier.id, clone(carrier.position)])),
+    casualtySlot,
+    casualtySlotPoint,
+    updatedAt: world.time,
+  };
+  casualty.coord = clone(casualtySlot);
+  casualty.position = clone(casualtySlotPoint);
+  casualty.facing = carriers[0]?.facing ?? casualty.facing;
+  casualty.lookDirection = casualty.facing;
+  casualty.intent = { type: "idle" };
+  casualty.status = Array.from(new Set([...casualty.status.filter((status) => status !== "evac_pending"), "being_dragged"]));
 }
 
 function nearestAvailableCoordAround(
@@ -4833,6 +7839,9 @@ function movementRate(unit: Unit): number {
   }
   if (unit.status.includes("evac_helper")) {
     return 0.45;
+  }
+  if (unit.status.includes("reinforcement")) {
+    return 0.8;
   }
   if (isUnitInjured(unit)) {
     return 0;
@@ -4997,6 +8006,11 @@ function rightPerpendicular(vector: MapVector): MapVector {
   return { x: -normalized.y, y: normalized.x };
 }
 
+function leftPerpendicular(vector: MapVector): MapVector {
+  const normalized = normalizeVector(vector);
+  return { x: normalized.y, y: -normalized.x };
+}
+
 function averageCoord(coords: HexCoord[]): HexCoord {
   if (coords.length === 0) {
     return { q: 0, r: 0 };
@@ -5103,7 +8117,9 @@ function mutableWorldForEvent(world: WorldState): WorldState {
     ...world,
     map: world.map.tilesByKey ? world.map : indexMap(world.map),
     activeFormation: world.activeFormation ? clone(world.activeFormation) : undefined,
+    activeManeuver: world.activeManeuver ? clone(world.activeManeuver) : undefined,
     casualtyEvacuation: world.casualtyEvacuation ? clone(world.casualtyEvacuation) : undefined,
+    casualtyTeam: world.casualtyTeam ? clone(world.casualtyTeam) : undefined,
     units,
     unitsById: Object.fromEntries(units.map((unit) => [unit.id, unit])),
     visibilityMemory: clone(world.visibilityMemory ?? {}),

@@ -101,12 +101,17 @@ export function createAppServer(): AppServer {
     connection.send({ type: "projection", projection: projectSession(game.session, "player") });
 
     socket.on("data", (chunk: Buffer) => {
-      for (const message of decodeFrames(chunk)) {
+      const decoded = decodeFrames(chunk);
+      for (const message of decoded.messages) {
         const parsed = safeJson(message);
         if (parsed?.type === "command") {
           game.session = dispatchCommand(game.session, parsed.command as PlayerCommand);
           broadcast(game);
         }
+      }
+      if (decoded.closeRequested) {
+        game.sockets.delete(connection);
+        socket.end(Buffer.from([0x88, 0x00]));
       }
     });
     socket.on("close", () => game.sockets.delete(connection));
@@ -309,8 +314,9 @@ function encodeFrame(message: string): Buffer {
   return Buffer.concat([header, payload]);
 }
 
-function decodeFrames(buffer: Buffer): string[] {
+function decodeFrames(buffer: Buffer): { messages: string[]; closeRequested: boolean } {
   const messages: string[] = [];
+  let closeRequested = false;
   let offset = 0;
   while (offset + 2 <= buffer.length) {
     const first = buffer[offset];
@@ -348,11 +354,12 @@ function decodeFrames(buffer: Buffer): string[] {
     }
 
     if (opcode === 0x8) {
+      closeRequested = true;
       break;
     }
     if (opcode === 0x1) {
       messages.push(payload.toString("utf8"));
     }
   }
-  return messages;
+  return { messages, closeRequested };
 }

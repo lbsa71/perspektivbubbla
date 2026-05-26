@@ -39,6 +39,7 @@ test("mcp endpoint initializes and lists game tools", async (t) => {
   assert.ok(toolNames.includes("game_move_to_hex"));
   assert.ok(toolNames.includes("game_advance_time"));
   assert.ok(toolNames.includes("game_issue_formation_order"));
+  assert.ok(toolNames.includes("game_issue_alternating_forward_order"));
 });
 
 test("mcp tools start a scenario and drive the backend session", async (t) => {
@@ -118,6 +119,33 @@ test("mcp tools can target the same isolated game ids as the http api", async (t
   const defaultResponse = await fetch(`http://127.0.0.1:${port}/api/session`);
   const defaultProjection = await defaultResponse.json() as { scenario: { id: string } };
   assert.equal(defaultProjection.scenario.id, "leader_lost_picture");
+});
+
+test("mcp exposes alternating forward as a tactical maneuver command", async (t) => {
+  const app = createAppServer();
+  await app.listen(0);
+  t.after(() => app.close());
+
+  const { port } = app.address();
+  await callTool(port, "game_start_session", {
+    scenarioId: "leader_lost_picture",
+    difficulty: "training",
+    seed: "mcp-alternating-forward",
+  });
+
+  const order = await callTool(port, "game_issue_alternating_forward_order", {
+    direction: "SE",
+    communication: "voice",
+  });
+
+  assert.equal(order.status, 200);
+  assert.equal(order.body.result.isError, false);
+  assert.ok(
+    order.body.result.structuredContent.events.some(
+      (event: { type: string; payload: { type?: string } }) =>
+        event.type === "tactical_maneuver_started" && event.payload.type === "alternating_forward",
+    ),
+  );
 });
 
 async function callTool(port: number, name: string, args: Record<string, unknown>, query = ""): Promise<McpHttpResponse> {

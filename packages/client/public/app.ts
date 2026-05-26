@@ -8,8 +8,11 @@ type ScenarioId =
   | "cover_to_cover_observed"
   | "risk_zone_blocking"
   | "leader_lost_picture"
+  | "casualty_retreat"
   | "river_bridge_crossing"
   | "ditch_line_contact";
+
+const FIRE_BURST_VISIBLE_SECONDS = 1.8;
 
 type HexCoord = {
   q: number;
@@ -41,6 +44,8 @@ type UnitActivityProjection = {
   targetPoint?: MapPoint;
   reason?: string;
   relatedUnitId?: string;
+  relatedUnitIds?: string[];
+  tacticalRole?: "covering" | "moving" | "carrier" | "casualty" | "handoff" | "reinforcement" | "resting";
   orderId?: string;
   progress?: number;
   pathLength?: number;
@@ -66,8 +71,46 @@ type CasualtyEvacuationProjection = {
   orderId?: string;
   casualtyUnitId?: string;
   helperUnitIds: string[];
+  carrierUnitIds?: string[];
+  underFire?: boolean;
+  requestedReinforcement?: { unitId?: string; forUnitId: string; requestedAt: number };
   phase: "idle" | "moving_to_casualty" | "dragging" | "completed";
   issuedAt?: number;
+};
+
+type CasualtyTeamProjection = {
+  casualtyUnitId: string;
+  carrierUnitIds: string[];
+  assignedElement?: "command" | "tat_1" | "tat_2";
+  mode: "advancing_with_group" | "retreating_with_group" | "handoff";
+  teamIntent: "holding" | "moving" | "handoff" | "blocked";
+  teamTarget?: HexCoord;
+  teamTargetPoint?: MapPoint;
+  carrierSlots: Record<string, HexCoord>;
+  carrierSlotPoints: Record<string, MapPoint>;
+  casualtySlot?: HexCoord;
+  casualtySlotPoint?: MapPoint;
+  waitReason?: "covering_bound" | "casualty_team_blocked" | "carrier_missing" | "handoff_pending" | "spacing_blocked";
+  updatedAt?: number;
+};
+
+type TacticalManeuverProjection = {
+  orderId: string;
+  type: "alternating_forward" | "alternating_retreat" | "zipper_retreat" | "casualty_recovery";
+  phase: "covering" | "moving" | "handoff" | "completed";
+  direction: Direction;
+  directionVector?: MapPoint;
+  communication: CommunicationMethod;
+  coveringUnitIds: string[];
+  movingUnitIds: string[];
+  casualtyUnitId?: string;
+  carrierUnitIds?: string[];
+  requestedReinforcement?: { unitId?: string; forUnitId: string; requestedAt: number };
+  zipperSide?: "left" | "right";
+  stepIndex?: number;
+  boundIndex?: number;
+  boundStartedUnitIds?: string[];
+  issuedAt: number;
 };
 
 type UnitProjection = {
@@ -83,6 +126,10 @@ type UnitProjection = {
   lookDirection: Direction;
   posture: string;
   health: number;
+  stamina: number;
+  suppression?: number;
+  fireCooldown?: number;
+  lastFiredAt?: number;
   intent: { type: string; target?: HexCoord; targetPoint?: MapPoint };
   status: string[];
   currentOrderId?: string;
@@ -109,6 +156,19 @@ type EventProjection = {
     communication?: CommunicationMethod;
     status?: string;
     reason?: string;
+    type?: string;
+    side?: "left" | "right";
+    zipperSide?: "left" | "right";
+    targetId?: string;
+    byUnitId?: string;
+    amount?: number;
+    oldCarrierId?: string;
+    newCarrierId?: string;
+    forUnitId?: string;
+    requestedAt?: number;
+    probability?: number;
+    roll?: number;
+    suppression?: number;
     severity?: "low" | "medium" | "high";
     message?: string;
     neighbourId?: string;
@@ -118,7 +178,18 @@ type EventProjection = {
     leadHexes?: number;
     relayedBy?: string;
     hops?: number;
-    phase?: "forming" | "advancing";
+    phase?: "forming" | "advancing" | "covering" | "moving" | "handoff" | "completed";
+    coveringUnitIds?: string[];
+    movingUnitIds?: string[];
+    carrierUnitIds?: string[];
+    carrierSlots?: Record<string, HexCoord>;
+    carrierSlotPoints?: Record<string, MapPoint>;
+    casualtySlot?: HexCoord;
+    casualtySlotPoint?: MapPoint;
+    teamTarget?: HexCoord;
+    teamTargetPoint?: MapPoint;
+    teamIntent?: string;
+    waitReason?: string;
     movingUnits?: string[];
     waits?: Array<Record<string, unknown>>;
     units?: Array<Record<string, unknown>>;
@@ -131,6 +202,7 @@ type EventProjection = {
       posture?: string;
       formation?: Formation;
       communication?: CommunicationMethod;
+      side?: "left" | "right";
       collectionPointId?: CasualtyCollectionPointId;
       casualtyUnitId?: string;
     };
@@ -319,6 +391,7 @@ type Projection = {
     direction: Direction;
     communication: CommunicationMethod;
   };
+  activeManeuver?: TacticalManeuverProjection;
   objective: {
     title: string;
     description: string;
@@ -327,6 +400,7 @@ type Projection = {
     constraints?: TrainingConstraints;
   };
   casualtyEvacuation?: CasualtyEvacuationProjection;
+  casualtyTeam?: CasualtyTeamProjection;
   map: {
     tiles: HexTileProjection[];
   };
@@ -554,6 +628,12 @@ function scenarioIdFromUrlToken(value: string | null | undefined): ScenarioId | 
     group_commander: "leader_lost_picture",
     gruppchef: "leader_lost_picture",
     leader_lost_picture: "leader_lost_picture",
+    skadad_retratt: "casualty_retreat",
+    skadad_under_retratt: "casualty_retreat",
+    casualty_retreat: "casualty_retreat",
+    injured_retreat: "casualty_retreat",
+    vaxelvis_bakat: "casualty_retreat",
+    blixtlas: "casualty_retreat",
     bro: "river_bridge_crossing",
     broovergang: "river_bridge_crossing",
     broövergång: "river_bridge_crossing",
@@ -871,6 +951,15 @@ function bindControls() {
     }
     if (commandTarget.dataset.command === "forward") {
       issueForwardOrder();
+    }
+    if (commandTarget.dataset.command === "alternating-forward") {
+      issueAlternatingForwardOrder();
+    }
+    if (commandTarget.dataset.command === "alternating-retreat") {
+      issueAlternatingRetreatOrder();
+    }
+    if (commandTarget.dataset.command === "zipper-retreat") {
+      issueZipperRetreatOrder(commandTarget.dataset.side === "right" ? "right" : "left");
     }
     if (commandTarget.dataset.command === "halt") {
       issueHaltOrder();
@@ -1322,6 +1411,48 @@ function coachStepFor(projection: Projection): CoachStep {
       body: "Du styr en enskild soldat. Kartklick skickar förflyttning, Q/E sveper blicken och händelseloggen visar vad som hände.",
       action: "Klicka mot skydd och håll koll på siktlinjer.",
       tone: "ready",
+    };
+  }
+
+  if (projection.scenario.id === "casualty_retreat") {
+    const casualtyPoint = selectedCasualtyCollectionPoint(projection);
+    const wounded = projection.units.find((unit) => unit.side === "friendly" && (unit.posture === "injured" || unit.status.includes("injured")));
+    if (!casualtyPoint) {
+      return {
+        step: "1/5",
+        title: "Sätt ÅSA",
+        body: "Retrettbanan kräver en uppsamlingsplats där bärarlaget kan få in den skadade innan gruppen räknas som ordnad.",
+        action: "Klicka Sätt ÅSA1 och välj en skyddad hex bakom gruppen.",
+        tone: "ready",
+      };
+    }
+    if (wounded && projection.casualtyEvacuation?.phase !== "dragging" && projection.casualtyEvacuation?.phase !== "completed") {
+      return {
+        step: "2/5",
+        title: "Starta bärarlag",
+        body: "Två soldater går till den skadade. Om de blir trötta ropar de förstärkning och avlösning sker lokalt.",
+        action: "Klicka Släpa skadad.",
+        tone: "ready",
+      };
+    }
+    if (!projection.activeManeuver || projection.activeManeuver.phase === "completed") {
+      return {
+        step: "3/5",
+        title: "Bryt kontakt bakåt",
+        body: "Växelvis bakåt delar gruppen i två tät. Blixtlås släpper soldater från flank i ordning. Ingen rör sig om täckning saknas.",
+        action: "Sätt reträttriktning på kartan och klicka Växelvis bakåt eller Blixtlås.",
+        tone: "ready",
+      };
+    }
+    const reinforcement = projection.casualtyEvacuation?.requestedReinforcement?.unitId;
+    return {
+      step: "4/5",
+      title: "Håll täckning",
+      body: `${displayManeuverState(projection.activeManeuver)}. Täckande soldater trycker ner fienden medan rörlig del eller bärare går bakåt.`,
+      action: reinforcement
+        ? `${displayUnitId(reinforcement)} går som förstärkning. Vänta in avlösningen innan nästa riskabla steg.`
+        : "Ge Halt! om täckning glappar, annars låt manövern växla vidare.",
+      tone: projection.risk.blocking.length > 0 ? "warning" : "wait",
     };
   }
 
@@ -1806,7 +1937,7 @@ function renderGroup(projection: Projection): void {
   const rows = friendlies
     .map((unit) => {
       const details = unitDetails(unit, projection);
-      const activity = activitySummary(unit);
+      const activity = shortActivity(unit);
       return `<li class="roster-item roster-${activityTone(unit)}" tabindex="0" title="${escapeAttribute(details)}" data-tooltip="${escapeAttribute(details)}">
         <span class="callsign">${escapeHtml(unit.name)}</span>
         <span class="roster-status">${escapeHtml(activity)}</span>
@@ -1865,13 +1996,10 @@ function renderControls(): void {
   document.querySelectorAll("[data-command='evacuate-casualty']").forEach((button) => {
     if (!(button instanceof HTMLButtonElement)) return;
     const hasWounded = Boolean(state.projection?.units.some((unit) => unit.side === "friendly" && (unit.posture === "injured" || unit.status.includes("injured"))));
-    const hasCollectionPoint = Boolean(state.projection && selectedCasualtyCollectionPoint(state.projection));
-    button.disabled = !hasWounded || !hasCollectionPoint;
+    button.disabled = !hasWounded;
     button.title = !hasWounded
       ? "Ingen skadad soldat"
-      : !hasCollectionPoint
-        ? "Sätt ÅSA1 eller ÅSA2 först"
-        : "Två närmaste stridsdugliga soldater omhändertar skadad";
+      : "Två närmaste stridsdugliga soldater omhändertar skadad. ÅSA styr bara uppdragets mål.";
   });
   renderGestureHints();
 }
@@ -1929,7 +2057,10 @@ function renderMap(projection: Projection): void {
       : "";
   const directionCueMarkup = renderDirectionCue(projection, size);
   const effectZoneMarkup = renderEffectZones(projection, size);
+  const maneuverMarkup = renderTacticalManeuverOverlay(projection, size);
   const blockingMarkup = renderBlockingWarnings(projection, size);
+  const fireMarkup = renderFireBursts(projection, size);
+  const firingUnitIds = recentFiringUnitIds(projection);
 
   const intentMarkup = units
     .filter((unit) => unit.side === "friendly" && unit.intent.type === "moving" && unit.intent.target)
@@ -1951,13 +2082,15 @@ function renderMap(projection: Projection): void {
       const details = unitDetails(unit, projection);
       const blocked = projection.risk.blocking.some((warning) => warning.unitId === unit.id || warning.blockingUnitId === unit.id);
       const wounded = unit.posture === "injured" || unit.status.includes("injured");
+      const statusClasses = unit.status.map((status) => `unit-status-${cssIdentifier(status)}`).join(" ");
+      const firing = firingUnitIds.has(unit.id);
       const tone = activityTone(unit);
       const status = shortActivity(unit);
       const statusMarkup =
         status && unit.side === "friendly"
           ? `<text class="unit-status-label status-${tone}" x="${point.x + size * 0.8}" y="${point.y + size * 0.65}">${escapeHtml(status)}</text>`
           : "";
-      return `<g class="unit-marker ${blocked ? "unit-risk" : ""} unit-${tone} ${wounded ? "unit-wounded" : ""}">
+      return `<g class="unit-marker ${blocked ? "unit-risk" : ""} ${firing ? "unit-firing" : ""} unit-${tone} ${wounded ? "unit-wounded" : ""} ${statusClasses}">
         <title>${escapeHtml(details)}</title>
         <circle class="unit-${unit.side} unit-${unit.role}" cx="${point.x}" cy="${point.y}" r="${size * 0.55}"></circle>
         <line class="facing" x1="${point.x}" y1="${point.y}" x2="${end.x}" y2="${end.y}"></line>
@@ -1968,7 +2101,7 @@ function renderMap(projection: Projection): void {
     .join("");
 
   svg.setAttribute("viewBox", `${state.pan.x} ${state.pan.y} ${svg.clientWidth || 800} ${svg.clientHeight || 600}`);
-  svg.innerHTML = `<g>${tileMarkup}${terrainIconMarkup}${effectZoneMarkup}${orderRangeMarkup}${objectiveMarkup}${casualtyMarkup}${directionCueMarkup}${blockingMarkup}${intentMarkup}${unitMarkup}</g>`;
+  svg.innerHTML = `<g>${tileMarkup}${terrainIconMarkup}${effectZoneMarkup}${orderRangeMarkup}${objectiveMarkup}${casualtyMarkup}${directionCueMarkup}${maneuverMarkup}${blockingMarkup}${intentMarkup}${fireMarkup}${unitMarkup}</g>`;
 
   svg.querySelectorAll(".hex, .objective-hitbox").forEach((hex) => {
     hex.addEventListener("pointerenter", (event) => {
@@ -2091,6 +2224,161 @@ function renderBlockingWarnings(projection: Projection, size: number): string {
     .join("");
 }
 
+function renderTacticalManeuverOverlay(projection: Projection, size: number): string {
+  const maneuver = projection.activeManeuver;
+  if (!maneuver || maneuver.phase === "completed") return "";
+  const unitsById = new Map(projection.units.map((unit) => [unit.id, unit]));
+  const rings = [
+    ...maneuver.coveringUnitIds.map((unitId) => ({ unitId, role: "covering" })),
+    ...maneuver.movingUnitIds.map((unitId) => ({ unitId, role: "moving" })),
+    ...(projection.casualtyEvacuation?.carrierUnitIds ?? []).map((unitId) => ({ unitId, role: "carrier" })),
+  ]
+    .map(({ unitId, role }) => {
+      const unit = unitsById.get(unitId);
+      if (!unit) return "";
+      const point = unitToPixel(unit, size);
+      return `<circle class="maneuver-ring maneuver-${role}" cx="${point.x}" cy="${point.y}" r="${size * (role === "moving" ? 0.9 : 0.78)}"></circle>`;
+    })
+    .join("");
+
+  const reinforcement = projection.casualtyEvacuation?.requestedReinforcement?.unitId
+    ? unitsById.get(projection.casualtyEvacuation.requestedReinforcement.unitId)
+    : undefined;
+  const casualty = projection.casualtyEvacuation?.casualtyUnitId
+    ? unitsById.get(projection.casualtyEvacuation.casualtyUnitId)
+    : undefined;
+  const reinforcementPath =
+    reinforcement && casualty
+      ? (() => {
+          const from = unitToPixel(reinforcement, size);
+          const to = unitToPixel(casualty, size);
+          return `<line class="maneuver-reinforcement-line" x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}"></line>`;
+        })()
+      : "";
+  const casualtyTeam = projection.casualtyTeam && casualty
+    ? (() => {
+        const casualtyPoint = unitToPixel(casualty, size);
+        const carrierLinks = projection.casualtyTeam.carrierUnitIds
+          .map((unitId) => unitsById.get(unitId))
+          .filter((unit): unit is UnitProjection => Boolean(unit))
+          .map((carrier) => {
+            const carrierPoint = unitToPixel(carrier, size);
+            return `<line class="casualty-team-link" x1="${carrierPoint.x}" y1="${carrierPoint.y}" x2="${casualtyPoint.x}" y2="${casualtyPoint.y}"></line>`;
+          })
+          .join("");
+        const targetPoint = projection.casualtyTeam.teamTargetPoint
+          ? mapPointToPixel(projection.casualtyTeam.teamTargetPoint, size)
+          : projection.casualtyTeam.teamTarget
+            ? axialToPixel(projection.casualtyTeam.teamTarget, size)
+            : undefined;
+        const target = targetPoint
+          ? `<g class="casualty-team-target casualty-team-${projection.casualtyTeam.teamIntent}">
+              <circle cx="${targetPoint.x}" cy="${targetPoint.y}" r="${size * 0.52}"></circle>
+              <path d="M ${targetPoint.x - size * 0.36} ${targetPoint.y} L ${targetPoint.x + size * 0.36} ${targetPoint.y} M ${targetPoint.x} ${targetPoint.y - size * 0.36} L ${targetPoint.x} ${targetPoint.y + size * 0.36}"></path>
+            </g>`
+          : "";
+        return `<g class="casualty-team-overlay casualty-team-${projection.casualtyTeam.teamIntent}">${carrierLinks}${target}</g>`;
+      })()
+    : "";
+
+  const blocked = projection.events
+    .filter(
+      (event) =>
+        projection.time - event.time <= 4 &&
+        event.type === "movement_waiting" &&
+        (event.payload?.reason === "retreat_cover_missing" ||
+          event.payload?.reason === "advance_cover_missing" ||
+          event.payload?.reason === "effect_zone_block_risk"),
+    )
+    .map((event) => {
+      const target = event.payload?.target;
+      if (!target) return "";
+      const point = axialToPixel(target, size);
+      return `<polygon class="maneuver-blocked" points="${hexPoints(point, size * 0.92)}"></polygon>`;
+    })
+    .join("");
+
+  return `<g class="maneuver-overlay">${reinforcementPath}${casualtyTeam}${blocked}${rings}</g>`;
+}
+
+function renderFireBursts(projection: Projection, size: number): string {
+  const unitsById = new Map(projection.units.map((unit) => [unit.id, unit]));
+  return projection.events
+    .filter((event) => projection.time - event.time <= FIRE_BURST_VISIBLE_SECONDS)
+    .map((event) => {
+      if (event.type === "friendly_fire_delivered") {
+        const unit = unitsById.get(event.payload?.unitId ?? "");
+        if (!unit) return "";
+        return renderFireBurstFromUnit(unit, unitsById.get(event.payload?.targetId ?? ""), event.payload?.direction ?? unit.lookDirection, size, "friendly");
+      }
+      if (event.type === "contact_pressure_emitted") {
+        const unit = unitsById.get(event.payload?.unitId ?? "");
+        const target = unitsById.get(event.payload?.targetId ?? "");
+        if (unit) {
+          return renderFireBurstFromUnit(unit, target, unit.lookDirection, size, "enemy");
+        }
+      }
+      if (event.type === "incoming_fire_resolved") {
+        const unit = unitsById.get(event.payload?.unitId ?? "");
+        const target = unitsById.get(event.payload?.targetId ?? "");
+        if (unit) {
+          return renderFireBurstFromUnit(unit, target, unit.lookDirection, size, "enemy");
+        }
+        if (target) {
+          const point = unitToPixel(target, size);
+          return `<g class="fire-burst fire-burst-enemy"><circle class="fire-impact" cx="${point.x}" cy="${point.y}" r="${size * 0.78}"></circle></g>`;
+        }
+      }
+      return "";
+    })
+    .join("");
+}
+
+function recentFiringUnitIds(projection: Projection): Set<string> {
+  return new Set(
+    projection.events
+      .filter((event) => projection.time - event.time <= FIRE_BURST_VISIBLE_SECONDS)
+      .filter(
+        (event) =>
+          event.type === "friendly_fire_delivered" ||
+          event.type === "contact_pressure_emitted" ||
+          event.type === "incoming_fire_resolved",
+      )
+      .map((event) => event.payload?.unitId)
+      .filter((unitId): unitId is string => Boolean(unitId)),
+  );
+}
+
+function renderFireBurstFromUnit(
+  unit: UnitProjection,
+  target: UnitProjection | undefined,
+  direction: Direction,
+  size: number,
+  tone: "friendly" | "enemy",
+): string {
+  const from = unitToPixel(unit, size);
+  const directionVector = target
+    ? { x: unitToPixel(target, size).x - from.x, y: unitToPixel(target, size).y - from.y }
+    : directionToPixelVector(direction, size * 2.4);
+  const length = Math.hypot(directionVector.x, directionVector.y) || 1;
+  const unitVector = { x: directionVector.x / length, y: directionVector.y / length };
+  const muzzle = { x: from.x + unitVector.x * size * 0.76, y: from.y + unitVector.y * size * 0.76 };
+  const end = {
+    x: from.x + unitVector.x * Math.min(length, size * 3.5),
+    y: from.y + unitVector.y * Math.min(length, size * 3.5),
+  };
+  const normal = { x: -unitVector.y, y: unitVector.x };
+  const sparkA = { x: muzzle.x + normal.x * size * 0.22, y: muzzle.y + normal.y * size * 0.22 };
+  const sparkB = { x: muzzle.x - normal.x * size * 0.22, y: muzzle.y - normal.y * size * 0.22 };
+  const className = tone === "friendly" ? "fire-burst-friendly" : "fire-burst-enemy";
+  const impact = target ? `<circle class="fire-impact" cx="${unitToPixel(target, size).x}" cy="${unitToPixel(target, size).y}" r="${size * 0.5}"></circle>` : "";
+  return `<g class="fire-burst ${className}">
+    <line class="fire-trace" x1="${muzzle.x}" y1="${muzzle.y}" x2="${end.x}" y2="${end.y}"></line>
+    <path class="fire-flash" d="M ${sparkA.x} ${sparkA.y} L ${muzzle.x + unitVector.x * size * 0.58} ${muzzle.y + unitVector.y * size * 0.58} L ${sparkB.x} ${sparkB.y}"></path>
+    ${impact}
+  </g>`;
+}
+
 function setDirectionCue(target: HexCoord, projection: Projection): { ok: boolean; reason: string; direction: Direction; cue: HexCoord } {
   const direction = directionFromTargetPoint(projection.player.position ?? axialToMapPoint(projection.player.coord), target);
   state.selectedDirection = direction ?? state.selectedDirection ?? projection.activeFormation?.direction ?? projection.player.facing;
@@ -2137,6 +2425,49 @@ function issueForwardOrder(): void {
   });
 }
 
+function issueAlternatingForwardOrder(): void {
+  const projection = state.projection;
+  if (!projection || projection.player.role !== "leader") return;
+  send({
+    type: "issue_alternating_forward_order",
+    unitId: projection.player.id,
+    communication: state.selectedCommunication,
+    direction: selectedOrderDirection(projection),
+    directionTarget: selectedDirectionTarget(projection),
+    directionTargetPoint: selectedDirectionTargetPoint(projection),
+    issuedAt: projection.time,
+  });
+}
+
+function issueAlternatingRetreatOrder(): void {
+  const projection = state.projection;
+  if (!projection || projection.player.role !== "leader") return;
+  send({
+    type: "issue_alternating_retreat_order",
+    unitId: projection.player.id,
+    communication: state.selectedCommunication,
+    direction: selectedOrderDirection(projection),
+    directionTarget: selectedDirectionTarget(projection),
+    directionTargetPoint: selectedDirectionTargetPoint(projection),
+    issuedAt: projection.time,
+  });
+}
+
+function issueZipperRetreatOrder(side: "left" | "right"): void {
+  const projection = state.projection;
+  if (!projection || projection.player.role !== "leader") return;
+  send({
+    type: "issue_zipper_retreat_order",
+    unitId: projection.player.id,
+    side,
+    communication: state.selectedCommunication,
+    direction: selectedOrderDirection(projection),
+    directionTarget: selectedDirectionTarget(projection),
+    directionTargetPoint: selectedDirectionTargetPoint(projection),
+    issuedAt: projection.time,
+  });
+}
+
 function issueHaltOrder(): void {
   const projection = state.projection;
   if (!projection || projection.player.role !== "leader") return;
@@ -2150,20 +2481,32 @@ function issueHaltOrder(): void {
 function issueCasualtyEvacuationOrder(): void {
   const projection = state.projection;
   if (!projection || projection.player.role !== "leader") return;
-  const casualty = projection.units.find((unit) => unit.side === "friendly" && (unit.posture === "injured" || unit.status.includes("injured")));
+  const casualty = casualtyForEvacuation(projection);
   const collectionPoint = selectedCasualtyCollectionPoint(projection);
   send({
     type: "start_casualty_evacuation",
     unitId: projection.player.id,
     collectionPointId: collectionPoint?.id,
     casualtyUnitId: casualty?.id,
-    target: collectionPoint?.coord,
     issuedAt: projection.time,
   });
 }
 
+function casualtyForEvacuation(projection: Projection): UnitProjection | undefined {
+  const wounded = projection.units.filter((unit) => unit.side === "friendly" && (unit.posture === "injured" || unit.status.includes("injured")));
+  const activeCasualty = projection.casualtyEvacuation?.phase !== "completed"
+    ? wounded.find((unit) => unit.id === projection.casualtyEvacuation?.casualtyUnitId)
+    : undefined;
+  return (
+    activeCasualty ??
+    wounded.find((unit) => unit.status.includes("primary_casualty")) ??
+    wounded.find((unit) => unit.status.includes("evac_pending") || unit.status.includes("being_dragged")) ??
+    wounded[0]
+  );
+}
+
 function selectedOrderDirection(projection: Projection): Direction {
-  return state.selectedDirection ?? projection.activeFormation?.direction ?? projection.player.facing;
+  return state.selectedDirection ?? projection.activeManeuver?.direction ?? projection.activeFormation?.direction ?? projection.player.facing;
 }
 
 function casualtyCollectionPointLabel(id: CasualtyCollectionPointId | undefined): string {
@@ -2369,6 +2712,7 @@ function formatMaybeNumber(value: number | undefined): string {
 function groupDetails(projection: Projection): string {
   const friendlies = projection.units.filter((unit) => unit.side === "friendly");
   const activeFormation = projection.activeFormation ? displayFormationState(projection.activeFormation) : "ingen";
+  const activeManeuver = projection.activeManeuver ? displayManeuverState(projection.activeManeuver) : "ingen";
   const directionCue = state.selectedDirection
     ? `${state.selectedDirection}${state.directionCue ? ` via ${state.directionCue.q},${state.directionCue.r}` : ""}`
     : projection.activeFormation?.direction ?? projection.player.facing;
@@ -2399,6 +2743,7 @@ function groupDetails(projection: Projection): string {
 
   return [
     `gruppering: ${activeFormation}`,
+    `manöver: ${activeManeuver}`,
     `metod: ${displayCommunication(state.selectedCommunication)}`,
     `riktning: ${directionCue}`,
     `soldater: ${friendlies.length}`,
@@ -2433,17 +2778,26 @@ function trainingGoalDetails(projection: Projection): string[] {
 }
 
 function orderDetails(projection: Projection): string {
-  const current = projection.activeFormation
-    ? `nu: ${displayFormationState(projection.activeFormation)}`
-    : projection.player.intent.type === "moving"
-      ? `nu: förflyttning mot ${projection.player.intent.target?.q ?? "?"},${projection.player.intent.target?.r ?? "?"}`
-      : "nu: stilla";
+  const current = projection.activeManeuver && projection.activeManeuver.phase !== "completed"
+    ? `nu: ${displayManeuverState(projection.activeManeuver)}`
+    : projection.activeFormation
+      ? `nu: ${displayFormationState(projection.activeFormation)}`
+      : projection.player.intent.type === "moving"
+        ? `nu: förflyttning mot ${projection.player.intent.target?.q ?? "?"},${projection.player.intent.target?.r ?? "?"}`
+        : "nu: stilla";
   const recent = projection.events
     .filter(
       (event) =>
         event.type === "formation_order_issued" ||
         event.type === "formation_advance_started" ||
         event.type === "formation_movement_diagnostic" ||
+        event.type === "tactical_maneuver_started" ||
+        event.type === "tactical_maneuver_phase_changed" ||
+        event.type === "friendly_fire_delivered" ||
+        event.type === "suppression_applied" ||
+        event.type === "stamina_changed" ||
+        event.type === "casualty_reinforcement_requested" ||
+        event.type === "casualty_carrier_relieved" ||
         event.type === "order_delivery_resolved" ||
         event.type === "group_halted" ||
         event.type === "movement_waiting" ||
@@ -2489,6 +2843,31 @@ function formatOrderEvent(event: EventProjection): string {
   if (event.type === "formation_movement_diagnostic") {
     return `${event.time.toFixed(1)} diagnos ${displayReason(event.payload?.reason)}`;
   }
+  if (event.type === "tactical_maneuver_started" || event.type === "tactical_maneuver_phase_changed") {
+    const type = event.payload?.type === "zipper_retreat"
+      ? `Blixtlås ${event.payload.zipperSide === "right" ? "höger" : "vänster"}`
+      : event.payload?.type === "alternating_forward"
+        ? "Växelvis framåt"
+      : event.payload?.type === "alternating_retreat"
+        ? "Växelvis bakåt"
+        : "Manöver";
+    return `${event.time.toFixed(1)} ${type} ${event.payload?.direction ?? "?"}: ${event.payload?.movingUnitIds?.length ?? 0} rör sig, ${event.payload?.coveringUnitIds?.length ?? 0} täcker`;
+  }
+  if (event.type === "friendly_fire_delivered") {
+    return `${event.time.toFixed(1)} ${displayUnitId(event.payload?.unitId)} täcker mot ${displayUnitId(event.payload?.targetId)}`;
+  }
+  if (event.type === "suppression_applied") {
+    return `${event.time.toFixed(1)} ${displayUnitId(event.payload?.unitId)} nedhålls av ${displayUnitId(event.payload?.byUnitId)}`;
+  }
+  if (event.type === "casualty_reinforcement_requested") {
+    return `${event.time.toFixed(1)} ${displayUnitId(event.payload?.forUnitId)} ropar förstärkning, ${displayUnitId(event.payload?.unitId)} går`;
+  }
+  if (event.type === "casualty_carrier_relieved") {
+    return `${event.time.toFixed(1)} ${displayUnitId(event.payload?.newCarrierId)} avlöser ${displayUnitId(event.payload?.oldCarrierId)}`;
+  }
+  if (event.type === "stamina_changed" && Number(event.payload?.delta ?? 0) < 0) {
+    return `${event.time.toFixed(1)} ${displayUnitId(event.payload?.unitId)} tappar ork ${displayReason(event.payload?.reason)}`;
+  }
   if (event.type === "casualty_collection_point_set") {
     return `${event.time.toFixed(1)} ${casualtyCollectionPointLabel(event.payload?.collectionPointId)} ${event.payload?.target?.q ?? "?"},${event.payload?.target?.r ?? "?"}`;
   }
@@ -2496,7 +2875,7 @@ function formatOrderEvent(event: EventProjection): string {
     return `${event.time.toFixed(1)} omhändertar ${displayUnitId(event.payload?.casualtyUnitId)}`;
   }
   if (event.type === "casualty_drag_started") {
-    return `${event.time.toFixed(1)} släpar ${displayUnitId(event.payload?.casualtyUnitId)} mot ${casualtyCollectionPointLabel(event.payload?.collectionPointId)}`;
+    return `${event.time.toFixed(1)} släpar ${displayUnitId(event.payload?.casualtyUnitId)} med gruppen`;
   }
   if (event.type === "casualty_evacuation_completed") {
     return `${event.time.toFixed(1)} ${displayUnitId(event.payload?.casualtyUnitId)} vid ${casualtyCollectionPointLabel(event.payload?.collectionPointId)}`;
@@ -2538,8 +2917,10 @@ function formatOrderEvent(event: EventProjection): string {
   const command = event.payload?.command;
   const detail = command?.target
     ? ` ${command.target.q},${command.target.r}`
-    : command?.direction
-      ? ` ${command.direction}`
+      : command?.direction
+        ? ` ${command.direction}`
+        : command?.side
+          ? ` ${command.side === "right" ? "höger" : "vänster"}`
       : command?.posture
         ? ` ${displayPosture(command.posture)}`
         : command?.formation
@@ -2552,11 +2933,13 @@ function unitDetails(unit: UnitProjection, projection: Projection): string {
   const activity = normalizedActivity(unit);
   const target = `${activity.target.q},${activity.target.r}`;
   const activeFormation = projection.activeFormation ? displayFormationState(projection.activeFormation) : "ingen";
+  const activeManeuver = projection.activeManeuver ? displayManeuverState(projection.activeManeuver) : "ingen";
   const directionCue = state.selectedDirection
     ? `${state.selectedDirection}${state.directionCue ? ` via ${state.directionCue.q},${state.directionCue.r}` : ""}`
     : projection.activeFormation?.direction ?? projection.player.facing;
   const order = unit.currentOrderId ? shortOrderId(unit.currentOrderId) : "-";
   const perceived = perceivedUnitFor(projection, unit.id);
+  const casualtyTeamLine = casualtyTeamDetailsForUnit(unit, projection);
   const blocking = projection.risk.blocking.filter((warning) => warning.unitId === unit.id || warning.blockingUnitId === unit.id);
   const effectStatus =
     blocking.length > 0
@@ -2579,17 +2962,22 @@ function unitDetails(unit: UnitProjection, projection: Projection): string {
     perceived?.perceivedCoord ? `uppfattad hex: ${perceived.perceivedCoord.q},${perceived.perceivedCoord.r}` : "uppfattad hex: okänd",
     `uppfattad status: ${displayPerceivedStatus(perceived?.perceivedStatus)}`,
     `status: ${activitySummary(unit)}`,
+    casualtyTeamLine,
     `avsikt: ${displayIntent(unit.intent.type)}`,
     `mål: ${target}`,
     `varför stilla: ${stillReason(unit)}`,
     `väg kvar: ${typeof activity.pathLength === "number" ? `${activity.pathLength} hex` : "-"}`,
     `framsteg i nästa hex: ${typeof activity.progress === "number" ? activity.progress : "-"}`,
     `hälsa: ${Math.round(unit.health)}`,
+    `ork: ${Math.round(unit.stamina)}`,
+    `nedhållning: ${Math.round((unit.suppression ?? 0) * 100)}%`,
     `ställning: ${displayPosture(unit.posture)}`,
+    `stridsläge: ${unit.status.length ? unit.status.map(displayUnitStatus).join(", ") : "-"}`,
     `riktning/blick: ${unit.facing}/${unit.lookDirection}`,
     `effektzon: ${effectStatus}`,
     `order: ${order}`,
     `gruppering: ${activeFormation}`,
+    `manöver: ${activeManeuver}`,
     `metod: ${displayCommunication(state.selectedCommunication)}`,
     `riktning: ${directionCue}`,
     `målhex: ${projection.objective.target.q},${projection.objective.target.r}`,
@@ -2597,6 +2985,19 @@ function unitDetails(unit: UnitProjection, projection: Projection): string {
       ? `${formatCasualtyCollectionPoints(projection)} (${displayCasualtyPhase(projection.casualtyEvacuation.phase)})`
       : "ÅSA: ej satt",
   ].join("\n");
+}
+
+function casualtyTeamDetailsForUnit(unit: UnitProjection, projection: Projection): string | undefined {
+  const team = projection.casualtyTeam;
+  if (!team) return undefined;
+  if (team.casualtyUnitId === unit.id) {
+    return `bärarlag: skadad, bärare ${team.carrierUnitIds.map(displayUnitId).join(", ")}, ${displayCasualtyTeamMode(team.mode)}, ${displayCasualtyTeamIntent(team)}`;
+  }
+  if (team.carrierUnitIds.includes(unit.id)) {
+    const partner = team.carrierUnitIds.find((unitId) => unitId !== unit.id);
+    return `bärarlag: bärare för ${displayUnitId(team.casualtyUnitId)}, partner ${displayUnitId(partner)}, ${displayCasualtyTeamMode(team.mode)}, ${displayCasualtyTeamIntent(team)}`;
+  }
+  return undefined;
 }
 
 function normalizedActivity(unit: UnitProjection): UnitActivityProjection {
@@ -2631,6 +3032,14 @@ function activitySummary(unit: UnitProjection): string {
 
 function shortActivity(unit: UnitProjection): string {
   const activity = normalizedActivity(unit);
+  if (unit.status.includes("being_dragged")) return "bärs";
+  if (unit.status.includes("evac_helper")) return "bär";
+  if (unit.status.includes("reinforcement")) return "först.";
+  if (unit.status.includes("forward_moving")) return "framåt";
+  if (unit.status.includes("retreat_moving")) return "bakåt";
+  if (unit.status.includes("covering_fire")) return "täcker";
+  if (unit.status.includes("suppressed")) return "nedh.";
+  if (unit.status.includes("tired")) return "trött";
   if (activity.state === "moving") return "→";
   if (activity.state === "waiting") return "väntar";
   if (activity.state === "blocked") return "block";
@@ -2651,6 +3060,7 @@ function displayCasualtyPhase(phase: CasualtyEvacuationProjection["phase"] | und
 
 function activityTone(unit: UnitProjection): "ready" | "wait" | "warning" {
   const activity = normalizedActivity(unit);
+  if (unit.status.includes("suppressed") || unit.status.includes("tired")) return "warning";
   if (activity.state === "blocked" || activity.state === "injured") return "warning";
   if (activity.state === "waiting" || activity.state === "holding") return "wait";
   return "ready";
@@ -2679,6 +3089,47 @@ function displayActivityState(state: UnitActivityProjection["state"]): string {
 function displayFormationState(formation: NonNullable<Projection["activeFormation"]>): string {
   const phase = formation.phase ? displayFormationPhase(formation.phase) : "satt";
   return `${displayFormation(formation.formation)} ${phase} ${formation.direction} ${formation.target.q},${formation.target.r}`;
+}
+
+function displayManeuverState(maneuver: TacticalManeuverProjection): string {
+  const type = displayManeuverType(maneuver.type, maneuver.zipperSide);
+  const moving = maneuver.movingUnitIds.map(displayUnitId).join(", ") || "ingen rör sig";
+  const covering = maneuver.coveringUnitIds.length;
+  return `${type} ${displayManeuverPhase(maneuver.phase)} ${maneuver.direction} (${moving}; ${covering} täcker)`;
+}
+
+function displayManeuverType(type: TacticalManeuverProjection["type"], side?: "left" | "right"): string {
+  if (type === "alternating_forward") return "Växelvis framåt";
+  if (type === "alternating_retreat") return "Växelvis bakåt";
+  if (type === "zipper_retreat") return `Blixtlås ${side === "right" ? "höger" : "vänster"}`;
+  if (type === "casualty_recovery") return "Omhändertagande";
+  return type;
+}
+
+function displayManeuverPhase(phase: TacticalManeuverProjection["phase"]): string {
+  const labels: Record<TacticalManeuverProjection["phase"], string> = {
+    covering: "täcker",
+    moving: "rör sig",
+    handoff: "ELDSTÄLLNINGAR",
+    completed: "klar",
+  };
+  return labels[phase] ?? phase;
+}
+
+function displayCasualtyTeamMode(mode: CasualtyTeamProjection["mode"]): string {
+  const labels: Record<CasualtyTeamProjection["mode"], string> = {
+    advancing_with_group: "framåt med gruppen",
+    retreating_with_group: "bakåt med gruppen",
+    handoff: "avlösning",
+  };
+  return labels[mode] ?? mode;
+}
+
+function displayCasualtyTeamIntent(team: CasualtyTeamProjection): string {
+  if (team.teamIntent === "moving") return "rör sig som lag";
+  if (team.teamIntent === "blocked") return `blockerad: ${displayReason(team.waitReason)}`;
+  if (team.teamIntent === "handoff") return "byter bärare";
+  return team.waitReason ? `håller: ${displayReason(team.waitReason)}` : "håller ihop";
 }
 
 function displayFormation(formation: Formation): string {
@@ -2731,6 +3182,18 @@ function objectiveCriteria(projection: Projection): string {
   if (projection.scenario.id === "risk_zone_blocking") {
     return "krav: båda stridsdugliga soldater inom 2 hex från målhexen";
   }
+  if (projection.scenario.id === "casualty_retreat") {
+    const target = selectedCasualtyCollectionPoint(projection)?.coord ?? projection.objective.target;
+    const friendlies = projection.units.filter((unit) => unit.side === "friendly");
+    const effective = friendlies.filter((unit) => unit.posture !== "injured" && !unit.status.includes("injured"));
+    const casualty = projection.units.find((unit) => unit.side === "friendly" && (unit.posture === "injured" || unit.status.includes("injured")));
+    const arrived = effective.filter((unit) => hexDistance(unit.coord, target) <= 3).length;
+    const required = Math.max(1, Math.ceil(effective.length * 0.75));
+    const leaderArrived = Boolean(effective.find((unit) => unit.role === "leader" && hexDistance(unit.coord, target) <= 3));
+    const deputyArrived = Boolean(effective.find((unit) => unit.role === "deputy_leader" && hexDistance(unit.coord, target) <= 3));
+    const casualtyArrived = casualty ? hexDistance(casualty.coord, target) <= 1 : false;
+    return `krav: skadad inom 1 hex från ÅSA, grpc/stf + ${required}/${effective.length} stridsdugliga inom 3 hex (nu ${casualtyArrived ? "skadad vid ÅSA" : "skadad ej framme"}, ${leaderArrived ? "grpc framme" : "grpc ej framme"}, ${deputyArrived ? "stf framme" : "stf ej framme"}, ${arrived}/${effective.length})`;
+  }
   const friendlies = projection.units.filter((unit) => unit.side === "friendly");
   const effective = friendlies.filter((unit) => unit.posture !== "injured" && !unit.status.includes("injured"));
   if (effective.length === 0) {
@@ -2773,16 +3236,33 @@ function displayReason(reason: string | undefined): string {
     casualty_collection_requires_leader: "bara gruppchef kan sätta ÅSA",
     casualty_collection_not_passable: "ÅSA är inte framkomlig",
     casualty_evacuation_requires_leader: "bara gruppchef kan omhänderta skadad",
-    casualty_collection_missing: "sätt ÅSA först",
+    casualty_collection_missing: "ÅSA saknas",
     no_wounded_soldier: "ingen skadad soldat hittad",
     not_enough_helpers: "för få stridsdugliga hjälpare",
     moving_to_casualty: "går till skadad",
-    casualty_drag: "släpas mot ÅSA",
+    casualty_drag: "släpas",
     casualty_drag_wait: "inväntar släpning",
-    casualty_helper_drag: "hjälper skadad mot ÅSA",
+    casualty_helper_drag: "hjälper skadad",
     casualty_helper_wait: "hjälper skadad",
+    casualty_team_bound: "bärarlagets bound",
+    casualty_team_wait: "bärarlaget håller",
+    casualty_team_blocked: "bärarlaget hittar inte tre fria hexar",
+    casualty_drag_spacing: "håller ihop bärarlaget",
+    casualty_reinforcement: "går som förstärkning",
+    reinforcement_wait: "väntar på avlösning",
+    casualty_exposed: "skadad exponerad",
+    unsecured_casualty: "skadad kamrat ej omhändertagen",
+    covering_bound: "bärarlaget täcker i denna fas",
+    carrier_missing: "bärare saknas",
+    handoff_pending: "väntar på avlösning",
+    spacing_blocked: "bärarlaget får inte isär/samman",
+    alternating_forward_order: "växelvis framåt-order",
+    alternating_forward_bound: "växelvis framåt-bound",
+    alternating_forward_bound_complete: "framåtbound uppnått",
+    advance_cover_missing: "saknar täckande eld framåt",
+    effect_zone_block_risk: "riskerar att blockera verkanszon",
+    advance_no_path: "ingen framåtväg",
     no_path_to_casualty: "ingen väg till skadad",
-    no_path_to_casualty_collection: "ingen väg till ÅSA",
     moving_to_order_target: "rör sig mot ordermål",
     moving_to_selected_hex: "rör sig mot vald hex",
     moving_to_target: "rör sig mot mål",
@@ -2791,6 +3271,14 @@ function displayReason(reason: string | undefined): string {
     neighbour_too_far: "granne för långt bort",
     neighbour_lagging: "granne för långt bak",
     neighbour_separated: "granne saknas i orderkedjan",
+    retreat_order: "reträttorder",
+    retreat_bound: "reträttbound",
+    retreat_bound_complete: "reträttläge uppnått",
+    retreat_cover_missing: "saknar täckande eld",
+    retreat_no_path: "ingen reträttväg",
+    covering_fire: "täcker med eld",
+    resting: "återhämtar ork",
+    casualty_reached_asa: "skadad och grupp vid ÅSA",
     occupied: "nästa hex upptagen",
     no_path: "ingen framkomlig väg",
     blocked: "blockerad",
@@ -2892,6 +3380,26 @@ function displayPosture(posture: string): string {
   return labels[posture] ?? posture;
 }
 
+function displayUnitStatus(status: string): string {
+  const labels: Record<string, string> = {
+    alerted: "beredd",
+    prepared_position: "förberett skydd",
+    in_cover: "i skydd",
+    concealed: "i skyl",
+    suppressed: "nedhållen",
+    covering_fire: "täcker med eld",
+    forward_moving: "framåt",
+    retreat_moving: "bakåt",
+    being_dragged: "bärs",
+    evac_helper: "bärare",
+    reinforcement: "förstärkning",
+    tired: "trött",
+    injured: "skadad",
+    primary_casualty: "primär skadad",
+  };
+  return labels[status] ?? status.replaceAll("_", " ");
+}
+
 function displayCommandType(type: string): string {
   const labels: Record<string, string> = {
     move_to_hex: "förflytta",
@@ -2901,6 +3409,9 @@ function displayCommandType(type: string): string {
     issue_formation_order: "formationsorder",
     issue_forward_order: "framåtorder",
     halt_group: "haltorder",
+    issue_alternating_forward_order: "växelvis framåt",
+    issue_alternating_retreat_order: "växelvis bakåt",
+    issue_zipper_retreat_order: "blixtlås",
     set_casualty_collection_point: "sätt ÅSA",
     start_casualty_evacuation: "omhänderta skadad",
     command_accepted: "order accepterad",
@@ -2933,7 +3444,7 @@ function formatTimelineEvent(event: EventProjection): string {
     return `omhändertar ${displayUnitId(event.payload?.casualtyUnitId)}`;
   }
   if (event.type === "casualty_drag_started") {
-    return `släpar ${displayUnitId(event.payload?.casualtyUnitId)} mot ${casualtyCollectionPointLabel(event.payload?.collectionPointId)}`;
+    return `släpar ${displayUnitId(event.payload?.casualtyUnitId)} med gruppen`;
   }
   if (event.type === "casualty_evacuation_completed") {
     return `${displayUnitId(event.payload?.casualtyUnitId)} vid ${casualtyCollectionPointLabel(event.payload?.collectionPointId)}`;
@@ -2942,7 +3453,8 @@ function formatTimelineEvent(event: EventProjection): string {
     return `${displayUnitId(event.payload?.unitId)} ${displayReceptionStatus(event.payload?.status)} ${displayReason(event.payload?.reason)}`;
   }
   if (event.type === "group_halted") {
-    return "gruppen gör halt";
+    const reason = displayReason(event.payload?.reason);
+    return reason ? `gruppen gör halt: ${reason}` : "gruppen gör halt";
   }
   if (event.type === "movement_started") {
     return `${displayUnitId(event.payload?.unitId)} börjar förflytta`;
@@ -2961,6 +3473,31 @@ function formatTimelineEvent(event: EventProjection): string {
   }
   if (event.type === "formation_movement_diagnostic") {
     return `diagnos: ${displayReason(event.payload?.reason)}`;
+  }
+  if (event.type === "tactical_maneuver_started" || event.type === "tactical_maneuver_phase_changed") {
+    const type = event.payload?.type === "zipper_retreat"
+      ? `blixtlås ${event.payload.zipperSide === "right" ? "höger" : "vänster"}`
+      : event.payload?.type === "alternating_forward"
+        ? "växelvis framåt"
+      : event.payload?.type === "alternating_retreat"
+        ? "växelvis bakåt"
+        : "manöver";
+    return `${type}: ${event.payload?.movingUnitIds?.length ?? 0} rör sig, ${event.payload?.coveringUnitIds?.length ?? 0} täcker`;
+  }
+  if (event.type === "friendly_fire_delivered") {
+    return `${displayUnitId(event.payload?.unitId)} ger täckande eld`;
+  }
+  if (event.type === "suppression_applied") {
+    return `${displayUnitId(event.payload?.unitId)} nedhålls`;
+  }
+  if (event.type === "stamina_changed" && Number(event.payload?.delta ?? 0) < 0) {
+    return `${displayUnitId(event.payload?.unitId)} blir trött`;
+  }
+  if (event.type === "casualty_reinforcement_requested") {
+    return `${displayUnitId(event.payload?.forUnitId)} ropar förstärkning`;
+  }
+  if (event.type === "casualty_carrier_relieved") {
+    return `${displayUnitId(event.payload?.newCarrierId)} avlöser ${displayUnitId(event.payload?.oldCarrierId)}`;
   }
   if (event.type === "friendly_effect_blocked") {
     return `${displayUnitId(event.payload?.blockingUnitId)} blockerar ${displayUnitId(event.payload?.unitId)} (${displaySeverity(event.payload?.severity)})`;
@@ -2986,7 +3523,11 @@ function formatTimelineEvent(event: EventProjection): string {
   if (event.type === "objective_failed") {
     return `mål misslyckat: ${displayReason(event.payload?.reason)}`;
   }
-  if (event.type === "command_accepted" || event.type === "command_rejected") {
+  if (event.type === "command_rejected") {
+    const reason = displayReason(event.payload?.reason);
+    return reason ? `order nekad: ${reason}` : displayCommandType(event.type);
+  }
+  if (event.type === "command_accepted") {
     return displayCommandType(event.type);
   }
   if (event.type === "scenario_generated") {
@@ -3051,6 +3592,7 @@ function send(command: {
   type: string;
   unitId?: string;
   direction?: string;
+  side?: "left" | "right";
   posture?: string;
   target?: HexCoord;
   collectionPointId?: CasualtyCollectionPointId;
@@ -3080,6 +3622,7 @@ function isScenarioId(value: string | undefined): value is ScenarioId {
     value === "cover_to_cover_observed" ||
     value === "risk_zone_blocking" ||
     value === "leader_lost_picture" ||
+    value === "casualty_retreat" ||
     value === "river_bridge_crossing" ||
     value === "ditch_line_contact"
   );
@@ -3109,14 +3652,14 @@ function displayRole(unit: UnitProjection): string {
 function displayElement(element: UnitProjection["element"]): string {
   if (element === "tat_1") return "tät 1";
   if (element === "tat_2") return "tät 2";
-  if (element === "command") return "chefsdel";
+  if (element === "command") return "enskild";
   return "-";
 }
 
 function displayElementName(element: string | undefined): string {
   if (element === "tat_1") return "tät 1";
   if (element === "tat_2") return "tät 2";
-  if (element === "command") return "chefsdel";
+  if (element === "command") return "enskild";
   return "tät";
 }
 
@@ -3140,7 +3683,7 @@ function displayScenarioRole(unit: ScenarioTroopPreview): string {
       : unit.element === "tat_2"
         ? "tät 2"
         : unit.element === "command"
-          ? "chefsdel"
+          ? "enskild"
           : "";
   return [role, element, unit.elementPosition ? `pos ${unit.elementPosition}` : ""].filter(Boolean).join(" / ");
 }
@@ -3152,6 +3695,7 @@ function scenarioLesson(id: ScenarioId): string {
     cover_to_cover_observed: "Enskild rörelse genom observerad terräng med hårda exponeringsgränser.",
     risk_zone_blocking: "Två soldater, effektzoner och hur kamrater blockerar varandra.",
     leader_lost_picture: "Gruppchef: riktning, orderkedja, tät, sammanhållning och tappad lägesbild.",
+    casualty_retreat: "Skadad under reträtt: ÅSA, växelvis bakåt, blixtlås, bärarlag och täckande eld.",
     river_bridge_crossing: "Flaskhalsar, broövergång och opasserbar terräng.",
     ditch_line_contact: "Sammanhängande diken, skyddad motståndare och gruppsamordning.",
   };
@@ -3163,6 +3707,7 @@ function firstOrderHint(scenario: Pick<ScenarioOption, "id" | "recommendedFormat
   if (scenario.id === "cover_to_cover_hasty") return "Välj snabb rutt, bryt exponering när den blir dyr.";
   if (scenario.id === "cover_to_cover_observed") return "Håll låg exponering, använd dike och skog före vägen.";
   if (scenario.id === "risk_zone_blocking") return "Orientera båda soldaterna och undvik blockerad effektzon.";
+  if (scenario.id === "casualty_retreat") return "Sätt ÅSA, starta Släpa skadad, ge Växelvis bakåt eller Blixtlås.";
   const formation = displayFormation(scenario.recommendedFormation ?? "line");
   const hint = difficulty === "training" ? "teckenhjälp syns" : difficulty === "normal" ? "tecken utan text" : "kort minne";
   return `Sätt riktning, välj ${formation}, Framåt (${hint}).`;
@@ -3189,6 +3734,7 @@ function scenarioUrlSlug(scenarioId: ScenarioId): string {
     cover_to_cover_observed: "skydd-till-skydd-observerad",
     risk_zone_blocking: "riskzon",
     leader_lost_picture: "skadad-soldat",
+    casualty_retreat: "skadad-retratt",
     river_bridge_crossing: "broovergang",
     ditch_line_contact: "dikeslinjen",
   };
@@ -3365,6 +3911,10 @@ function escapeHtml(value: string): string {
 
 function escapeAttribute(value: string): string {
   return escapeHtml(value).replace(/\n/g, "&#10;");
+}
+
+function cssIdentifier(value: string): string {
+  return value.replace(/[^A-Za-z0-9_-]/g, "-");
 }
 
 function hexPoints(center: { x: number; y: number }, size: number): string {
